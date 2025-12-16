@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import Highcharts from "highcharts";
+import HighchartsReact from "highcharts-react-official";
 import {
   PortfolioResponse,
   HoldingStats,
@@ -23,6 +25,10 @@ type SearchItem = {
   mic?: string;
   href?: string;
 };
+
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const ALLOCATION_COLORS = ["#22c55e", "#0ea5e9", "#a855f7", "#f97316", "#fcd34d", "#38bdf8", "#34d399"];
+const LOSS_COLOR = "#fb7185";
 
 const formatPercent = (value?: number | null) => {
   if (value === null || value === undefined) return "—";
@@ -88,6 +94,7 @@ function App() {
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
   const summary = portfolio?.summary;
+  const totalCurrency = holdings[0]?.currency || "EUR";
 
   const enhancedSummary = useMemo(() => {
     const total_cost = holdings.reduce((sum, h) => sum + h.shares * h.cost_basis, 0);
@@ -115,6 +122,273 @@ function App() {
       hourly_change_pct: summary?.hourly_change_pct ?? null,
     };
   }, [holdings, liveQuotes, summary]);
+
+  const allocationData = useMemo(() => {
+    const points = holdings
+      .map((holding) => {
+        const live = liveQuotes[holding.symbol];
+        const price =
+          live?.price ??
+          holding.last_price ??
+          holding.cost_basis ??
+          0;
+        const value =
+          price !== null && price !== undefined
+            ? price * holding.shares
+            : 0;
+        if (!value || Number.isNaN(value) || value <= 0) return null;
+        return {
+          name: holding.symbol,
+          label: holding.name || holding.symbol || holding.isin || "Holding",
+          y: Number(value.toFixed(2)),
+          currency: holding.currency || totalCurrency,
+        };
+      })
+      .filter(Boolean) as Array<{
+        name: string;
+        label: string;
+        y: number;
+        currency: string;
+      }>;
+    const total = points.reduce((sum, p) => sum + p.y, 0);
+    return { points, total };
+  }, [holdings, liveQuotes, totalCurrency]);
+
+  const plData = useMemo(() => {
+    const points = holdings
+      .map((holding) => {
+        const live = liveQuotes[holding.symbol];
+        const price = live?.price ?? holding.last_price ?? null;
+        const marketValue =
+          price !== null && price !== undefined
+            ? price * holding.shares
+            : holding.market_value;
+        const totalCost = holding.shares * holding.cost_basis;
+        const gainAbs =
+          marketValue !== null && marketValue !== undefined
+            ? marketValue - totalCost
+            : holding.gain_abs;
+        if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return null;
+        const amount = Math.abs(gainAbs);
+        if (!amount || Number.isNaN(amount)) return null;
+        return {
+          name: holding.symbol,
+          label: holding.name || holding.symbol || holding.isin || "Holding",
+          gain: Number(gainAbs.toFixed(2)),
+          y: Number(amount.toFixed(2)),
+          currency: holding.currency || totalCurrency,
+          isLoss: gainAbs < 0,
+        };
+      })
+      .filter(Boolean) as Array<{
+        name: string;
+        label: string;
+        gain: number;
+        y: number;
+        currency: string;
+        isLoss: boolean;
+      }>;
+    const total = points.reduce((sum, p) => sum + p.y, 0);
+    return { points, total };
+  }, [holdings, liveQuotes, totalCurrency]);
+
+  const allocationOptions = useMemo<Highcharts.Options>(() => {
+    const hasData = allocationData.total > 0 && allocationData.points.length > 0;
+    const data = hasData
+      ? allocationData.points.map((p, idx) => ({
+          name: p.name,
+          y: p.y,
+          color: ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+          currency: p.currency,
+          displayName: p.label,
+        }))
+      : [
+          {
+            name: "Add holdings",
+            y: 1,
+            color: "rgba(255, 255, 255, 0.06)",
+            isDummy: true,
+          },
+        ];
+
+    return {
+      chart: {
+        type: "pie",
+        backgroundColor: "transparent",
+        height: 300,
+      },
+      title: { text: undefined },
+      tooltip: {
+        useHTML: true,
+        backgroundColor: "rgba(12, 18, 36, 0.95)",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        style: { color: "#e9ecf4" },
+        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
+          const point = this.point as Highcharts.Point & {
+            currency?: string;
+            displayName?: string;
+            isDummy?: boolean;
+          };
+          const options = point.options as Highcharts.PointOptionsObject & {
+            currency?: string;
+            displayName?: string;
+            isDummy?: boolean;
+          };
+          if (options.isDummy) {
+            return "Add holdings to see allocation";
+          }
+          const currency = options.currency || totalCurrency;
+          const displayName = options.displayName || point.name;
+          const value = formatMoney(point.y ?? 0, currency);
+          const percentage = (point.percentage || 0).toFixed(1);
+          return `<strong>${displayName}</strong><br/>${value}<br/>${percentage}% of portfolio`;
+        },
+      },
+      plotOptions: {
+        pie: {
+          innerSize: "65%",
+          size: "78%",
+          borderWidth: 0,
+          dataLabels: {
+            enabled: hasData,
+            distance: 12,
+            connectorColor: "rgba(255, 255, 255, 0.35)",
+            connectorWidth: 1.2,
+            style: { color: "#e9ecf4", textOutline: "none", fontWeight: "600", textTransform: "uppercase", fontSize: "12px", letterSpacing: "0.02em" },
+            crop: false,
+            overflow: "allow",
+            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
+              const point = this.point as Highcharts.Point & {
+                options: Highcharts.PointOptionsObject & { currency?: string };
+              };
+              const currency =
+                (point.options && (point.options as any).currency) || totalCurrency;
+              const value = formatMoney(point.y as number, currency);
+              const pct = (point.percentage || 0).toFixed(1);
+              return `${point.name}<br/>${value} • ${pct}%`;
+            },
+          },
+          states: {
+            hover: { brightness: 0.08 },
+          },
+        },
+      },
+      legend: {
+        enabled: true,
+        itemStyle: { color: "#e9ecf4", fontWeight: "500" },
+      },
+      credits: { enabled: false },
+      series: [
+        {
+          type: "pie",
+          name: "Allocation",
+          data,
+        },
+      ],
+    };
+  }, [allocationData, totalCurrency]);
+
+  const plOptions = useMemo<Highcharts.Options>(() => {
+    const hasData = plData.total > 0 && plData.points.length > 0;
+    const data = hasData
+      ? plData.points.map((p, idx) => ({
+          name: p.name,
+          y: p.y,
+          color: p.isLoss
+            ? LOSS_COLOR
+            : ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+          currency: p.currency,
+          displayName: p.label,
+          rawGain: p.gain,
+          isLoss: p.isLoss,
+        }))
+      : [
+          {
+            name: "No P/L yet",
+            y: 1,
+            color: "rgba(255, 255, 255, 0.06)",
+            isDummy: true,
+          },
+        ];
+
+    return {
+      chart: {
+        type: "pie",
+        backgroundColor: "transparent",
+        height: 300,
+      },
+      title: { text: undefined },
+      tooltip: {
+        useHTML: true,
+        backgroundColor: "rgba(12, 18, 36, 0.95)",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        style: { color: "#e9ecf4" },
+        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
+          const point = this.point as Highcharts.Point & {
+            isLoss?: boolean;
+            rawGain?: number;
+          };
+          const options = point.options as Highcharts.PointOptionsObject & {
+            currency?: string;
+            displayName?: string;
+            isDummy?: boolean;
+            rawGain?: number;
+          };
+          if (options.isDummy) {
+            return "Add holdings/prices to see P/L mix";
+          }
+          const currency = options.currency || totalCurrency;
+          const rawGain = options.rawGain ?? 0;
+          const value = `${rawGain >= 0 ? "+" : "-"}${formatMoney(Math.abs(rawGain), currency)}`;
+          const percentage = (point.percentage || 0).toFixed(1);
+          return `<strong>${options.displayName || point.name}</strong><br/>${value}<br/>${percentage}% of total P/L`;
+        },
+      },
+      plotOptions: {
+        pie: {
+          innerSize: "65%",
+          size: "78%",
+          borderWidth: 0,
+          dataLabels: {
+            enabled: hasData,
+            distance: 12,
+            connectorColor: "rgba(255, 255, 255, 0.35)",
+            connectorWidth: 1.2,
+            style: { color: "#e9ecf4", textOutline: "none", fontWeight: "600", textTransform: "uppercase", fontSize: "12px", letterSpacing: "0.02em" },
+            crop: false,
+            overflow: "allow",
+            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
+              const point = this.point as Highcharts.Point;
+              const options = point.options as Highcharts.PointOptionsObject & {
+                currency?: string;
+                rawGain?: number;
+              };
+              const currency = options.currency || totalCurrency;
+              const rawGain = options.rawGain ?? 0;
+              const value = `${rawGain >= 0 ? "+" : "-"}${formatMoney(Math.abs(rawGain), currency)}`;
+              const pct = (point.percentage || 0).toFixed(1);
+              return `${point.name}<br/>${value} • ${pct}%`;
+            },
+          },
+          states: {
+            hover: { brightness: 0.08 },
+          },
+        },
+      },
+      legend: {
+        enabled: true,
+        itemStyle: { color: "#e9ecf4", fontWeight: "500" },
+      },
+      credits: { enabled: false },
+      series: [
+        {
+          type: "pie",
+          name: "P/L mix",
+          data,
+        },
+      ],
+    };
+  }, [plData, totalCurrency]);
 
   const loadPortfolio = async () => {
     try {
@@ -153,7 +427,7 @@ function App() {
 
   useEffect(() => {
     loadPortfolio();
-    const interval = setInterval(loadPortfolio, 60_000);
+    const interval = setInterval(loadPortfolio, REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -226,7 +500,7 @@ function App() {
       return;
     }
     const now = Date.now();
-    if (now - lastQuoteFetch < 5 * 60 * 1000) return; // throttle to every 5 minutes
+    if (now - lastQuoteFetch < REFRESH_INTERVAL_MS) return; // throttle to every 5 minutes
     let cancelled = false;
     const loadQuotes = async () => {
       const entries: Array<[string, EuronextQuote]> = [];
@@ -336,12 +610,10 @@ function App() {
       setStatus({ kind: "success", message: "Holding removed" });
     } catch (err) {
       setStatus({ kind: "error", message: "Failed to delete holding" });
-    } finally {
-      setDeletingId(null);
-    }
+  } finally {
+    setDeletingId(null);
+  }
   };
-
-  const totalCurrency = holdings[0]?.currency || "EUR";
 
   return (
     <div className="page">
@@ -357,10 +629,11 @@ function App() {
         <div className="hero-badge">
           <span className="dot" />
           <div>
-            <p>API</p>
+            <p>API
             <strong>
-              {status.kind === "error" ? "Disconnected" : "Connected"}
+              {status.kind === "error" ? " Disconnected" : " Connected"}
             </strong>
+            </p>
           </div>
         </div>
       </header>
@@ -370,41 +643,73 @@ function App() {
           <div className="card-header">
             <div>
               <p className="eyebrow">Portfolio summary</p>
-              <h2>Hourly pulse</h2>
             </div>
             {loading && <span className="pill ghost">Loading…</span>}
             {!loading && status.kind === "error" && (
               <span className="pill danger">API issue</span>
             )}
           </div>
-          <div className="summary-grid">
-            <div className="stat">
-              <p>Invested</p>
-              <h3>{formatMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
+          <div className="summary-content">
+            <div className="summary-grid">
+              <div className="stat">
+                <p>Invested</p>
+                <h3>{formatMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
+              </div>
+              <div className="stat">
+                <p>Value</p>
+                <h3>{formatMoney(enhancedSummary.total_value, totalCurrency)}</h3>
+              </div>
+              <div className="stat">
+                <p>Latent P/L</p>
+                <h3
+                  className={
+                    enhancedSummary.total_gain_abs === null ||
+                    enhancedSummary.total_gain_abs === undefined
+                      ? ""
+                      : enhancedSummary.total_gain_abs >= 0
+                      ? "positive"
+                      : "negative"
+                  }
+                >
+                  {formatMoney(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
+                  <span className="muted">
+                    ({formatPercent(enhancedSummary.total_gain_pct)})
+                  </span>
+                </h3>
+              </div>
             </div>
-            <div className="stat">
-              <p>Value</p>
-              <h3>{formatMoney(enhancedSummary.total_value, totalCurrency)}</h3>
+            <div className="summary-charts">
+              <div className="summary-chart">
+                <div className="summary-chart-header">
+                  <p className="eyebrow">Allocation</p>
+                  <h3>Portfolio mix</h3>
+                  <p className="muted helper">Based on latest prices</p>
+                </div>
+                <div className="chart-wrapper">
+                  <HighchartsReact
+                    highcharts={Highcharts}
+                    options={allocationOptions}
+                  />
+                </div>
+                {(!allocationData.points.length || !allocationData.total) && (
+                  <p className="muted helper">Add holdings to see the breakdown.</p>
+                )}
+              </div>
+
+              <div className="summary-chart">
+                <div className="summary-chart-header">
+                  <p className="eyebrow">Performance</p>
+                  <h3>P/L mix</h3>
+                  <p className="muted helper">Absolute gains vs losses by holding</p>
+                </div>
+                <div className="chart-wrapper">
+                  <HighchartsReact highcharts={Highcharts} options={plOptions} />
+                </div>
+                {(!plData.points.length || !plData.total) && (
+                  <p className="muted helper">Add holdings/prices to see the P/L breakdown.</p>
+                )}
+              </div>
             </div>
-            <div className="stat">
-              <p>Latent P/L</p>
-              <h3
-                className={
-                  enhancedSummary.total_gain_abs === null ||
-                  enhancedSummary.total_gain_abs === undefined
-                    ? ""
-                    : enhancedSummary.total_gain_abs >= 0
-                    ? "positive"
-                    : "negative"
-                }
-              >
-                {formatMoney(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
-                <span className="muted">
-                  ({formatPercent(enhancedSummary.total_gain_pct)})
-                </span>
-              </h3>
-            </div>
-            
           </div>
           {status.kind !== "idle" && (
             <p className={`status status-${status.kind}`}>{status.message}</p>
