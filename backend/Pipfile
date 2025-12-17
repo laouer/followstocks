@@ -1,14 +1,17 @@
-[requires]
-python_version = "3.10"
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
 
 [packages]
 fastapi = "==0.110.0"
-uvicorn = {version = "==0.29.0", extras = ["standard"]}
 sqlalchemy = "==2.0.29"
 pydantic = "==2.6.4"
 httpx = "==0.27.0"
+yfinance = "==0.2.66"
+uvicorn = {extras = ["standard"], version = "==0.29.0"}
 
 [dev-packages]
 
-[scripts]
-start = "uvicorn app.main:app --reload"
+[requires]
+python_version = "3.10"

@@ -259,7 +259,7 @@ body {
 .table-row span {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 5px;
 }
 
 .table-row small {
@@ -559,6 +559,15 @@ body {
   gap: 8px;
   margin-top: 4px;
 }
+
+.inline-column {
+  display: grid;
+  grid-template-columns: 0.2fr 1fr;
+    align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 
 .symbol-modal-search{
   display: flex;

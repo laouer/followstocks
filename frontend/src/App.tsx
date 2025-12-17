@@ -20,9 +20,14 @@ type Status = {
 type SearchItem = {
   symbol: string;
   name: string;
-  isin: string;
+  isin?: string;
   mic?: string;
   href?: string;
+  exchange?: string;
+  sector?: string;
+  industry?: string;
+  typeDisp?: string;
+  quoteType?: string;
 };
 
 type SortField = "instrument" | "acquired_at" | "shares" | "cost" | "last_price" | "value" | "pl";
@@ -501,40 +506,30 @@ function App() {
       try {
         const res = await searchInstruments(term);
         const rawItems =
-          res.data?.instruments ||
           res.data?.results ||
+          res.data?.instruments ||
           res.data?.items ||
           (Array.isArray(res.data) ? res.data : []);
         const parsed: SearchItem[] = (rawItems || [])
           .map((item: any) => {
-            const label: string = item.label || "";
-            const symbolFromLabel = (
-              label.match(/<span class=['"]symbol['"]>([^<]+)/i)?.[1] || ""
-            ).trim();
-            const nameFromLabel = (
-              label.match(
-                /<span class=['"]name['"][^>]*>(?:<a [^>]+>)?([^<]+)/i
-              )?.[1] || ""
-            ).trim();
-            const rawHref = label.match(/<a [^>]*href=['"]([^'"]+)/i)?.[1] || item.link || "";
-            const hrefClean = rawHref ? rawHref.replace(/^\/+/, "") : "";
-            const hrefMatch = hrefClean ? `https://live.euronext.com/${hrefClean}` : "";
-            const cleanName = (item.name || nameFromLabel || "")
-              .toString()
-              .trim();
-            const symbol = (
-              item.symbol ||
-              item.ticker ||
-              symbolFromLabel ||
-              item.value ||
-              ""
-            )
-              .toString()
-              .trim();
-            const isin = (item.isin || item.value || "").toString().trim();
-            const mic = (item.mic || "").toString().trim();
-            if (!symbol && !isin) return null;
-            return { symbol, name: cleanName, isin, mic, href: hrefMatch };
+            const symbol = (item.symbol || item.ticker || "").toString().trim();
+            const name = (item.longname || item.shortname || item.name || symbol || "").toString().trim();
+            const exchange = (item.exchDisp || item.exchange || "").toString().trim();
+            const sector = (item.sector || "").toString().trim();
+            const industry = (item.industry || "").toString().trim();
+            const typeDisp = (item.typeDisp || item.quoteType || "").toString().trim();
+            const href = symbol ? `https://fr.finance.yahoo.com/quote/${symbol}/` : "";
+            if (!symbol) return null;
+            return {
+              symbol,
+              name,
+              exchange,
+              sector: sector || undefined,
+              industry: industry || undefined,
+              typeDisp: typeDisp || undefined,
+              mic: exchange || undefined,
+              href: href || undefined,
+            };
           })
           .filter(Boolean) as SearchItem[];
         setSymbolResults(parsed);
@@ -602,7 +597,6 @@ function App() {
             price: Number(holdingForm.manualLastPrice),
             recorded_at,
           });
-          await loadPortfolio();
         } catch (err) {
           // non-blocking; just surface a message
           setStatus({
@@ -611,6 +605,7 @@ function App() {
           });
         }
       }
+      await loadPortfolio();
       setStatus({ kind: "success", message: editingHoldingId ? "Holding updated" : "Holding added" });
       setShowAddHoldingModal(false);
     } catch (err) {
@@ -776,8 +771,7 @@ function App() {
                 onClick={() => {
                   setSymbolSearchTerm("");
                   setEditingHoldingId(null);
-                  setHoldingForm({
-                    symbol: "",
+                  setHoldingForm({symbol: "",
                     shares: "",
                     cost_basis: "",
                     currency: "EUR",
@@ -785,7 +779,7 @@ function App() {
                     mic: "",
                     name: "",
                     href: "",
-                    acquired_at: "",
+                    acquired_at: ""
                   });
                   setShowAddHoldingModal(true);
                 }}
@@ -855,35 +849,34 @@ function App() {
                           )}
                         </div>
                         <div className="instrument-actions column">
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label={`Edit ${holding.symbol}`}
-                            onClick={() => {
-                            setHoldingForm({
-                              symbol: holding.symbol,
-                              shares: String(holding.shares),
-                              cost_basis: String(holding.cost_basis),
-                              currency: holding.currency,
-                              isin: holding.isin || "",
-                              mic: holding.mic || "",
-                              name: holding.name || "",
-                              href: holding.href || "",
-                              acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
-                              manualPriceEnabled: false,
-                              manualLastPrice: "",
-                              manualLastPriceAt: "",
-                            });
-                            setSymbolSearchTerm(holding.symbol);
-                            setEditingHoldingId(holding.id);
-                            setShowAddHoldingModal(true);
-                          }}
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={`Edit ${holding.symbol}`}
+                              onClick={() => {
+                                setHoldingForm({
+                                  symbol: holding.symbol,
+                                  shares: String(holding.shares),
+                                  cost_basis: String(holding.cost_basis),
+                                  currency: holding.currency,
+                                  isin: holding.isin || "",
+                                  mic: holding.mic || "",
+                                  name: holding.name || "",
+                                  href: holding.href || "",
+                                  acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
+                                  manualPriceEnabled: false,
+                                  manualLastPrice: "",
+                                  manualLastPriceAt: "",
+                                });
+                              setEditingHoldingId(holding.id);
+                              setShowAddHoldingModal(true);
+                            }}
                             >
                               ✏️
                             </button>
                             <button
                               type="button"
-                              className="icon-button danger"
+                              className="icon-button"
                               aria-label={`Delete ${holding.symbol}`}
                               disabled={deletingId === holding.id}
                               onClick={() => handleDeleteHolding(holding.id)}
@@ -959,24 +952,23 @@ function App() {
                       placeholder="AAPL"
                       autoComplete="off"
                       value={holdingForm.symbol}
-                      onChange={(e) => {
-                        setHoldingForm((prev) => ({
-                          ...prev,
-                          symbol: e.target.value,
-                        }));
-                        setSymbolSearchTerm(e.target.value);
-                      }}
+                    onChange={(e) => {
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        symbol: e.target.value,
+                      }));
+                    }}
                     />
                   </div>
                   <small className="muted">
                     {symbolSearchStatus.kind === "loading"
-                      ? "Searching Euronext..."
-                      : symbolSearchStatus.message ||
-                        "Type 2+ letters to search Euronext"}
+                      ? "Searching..."
+                      : symbolSearchStatus.message || ""}
                   </small>
                 </label>
+                
                 <label>
-                  ISIN 
+                  ISIN (optional)
                   <input
                     placeholder="US0378331005"
                     value={holdingForm.isin}
@@ -1001,28 +993,30 @@ function App() {
                     }
                   />
                 </label>
-                <label>
-                  Euronext link
-                  <input
-                    placeholder="/fr/product/equities/ES0105486007-XMLI"
-                    value={holdingForm.href}
-                    onChange={(e) =>
-                      setHoldingForm((prev) => ({
-                        ...prev,
-                        href: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
+                
                 <label>
                   MIC (optional)
                   <input
-                    placeholder="XPAR"
+                    placeholder="Paris"
                     value={holdingForm.mic}
                     onChange={(e) =>
                       setHoldingForm((prev) => ({
                         ...prev,
                         mic: e.target.value,
+                      }))
+                    }
+                  />
+
+                </label>
+                <label>
+                  Finance link
+                  <input
+                    placeholder="https://fr.finance.yahoo.com/quote/XYZ/"
+                    value={holdingForm.href}
+                    onChange={(e) =>
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        href: e.target.value,
                       }))
                     }
                   />
@@ -1085,7 +1079,7 @@ function App() {
                     <option value="EUR">EUR</option>
                   </select>
                 </label>
-                <label className="inline-row">
+                <label className="inline-column" >
                   <input
                     type="checkbox"
                     checked={holdingForm.manualPriceEnabled}
@@ -1096,7 +1090,7 @@ function App() {
                       }))
                     }
                   />
-                  <span className="muted">Manual last price (use for non-standard instruments like FCPE)</span>
+                  <span className="muted">Manual last price <br/> (use for non-standard instruments like FCPE)</span>
                 </label>
                 {holdingForm.manualPriceEnabled && (
                   <>
@@ -1200,9 +1194,8 @@ function App() {
               />
               <p className="muted helper">
                 {symbolSearchStatus.kind === "loading"
-                  ? "Searching Euronext..."
-                  : symbolSearchStatus.message ||
-                    "Type 2+ letters to search Euronext"}
+                  ? "Searching..."
+                  : symbolSearchStatus.message || ""}
               </p>
               <div className="symbol-modal-list">
                 {symbolSearchStatus.kind === "error" && (
@@ -1215,8 +1208,9 @@ function App() {
                   <p className="empty">No results yet.</p>
                 ) : (
                   symbolResults.slice(0, 20).map((item, idx) => {
-                    const label = item.name || item.isin || "Unknown";
-                    const key = `${item.symbol || "sym"}-${item.isin || "noisin"}-${item.mic || "nomic"}-${idx}`;
+                    const label = item.name || item.symbol || "Unknown";
+                    const key = `${item.symbol || "sym"}-${item.exchange || "noex"}-${idx}`;
+                    const yahooHref = item.symbol ? `https://fr.finance.yahoo.com/quote/${item.symbol}/` : "";
                     return (
                       <button
                         type="button"
@@ -1229,7 +1223,7 @@ function App() {
                           isin: item.isin || prev.isin,
                           mic: item.mic || prev.mic,
                           name: item.name || prev.name,
-                          href: item.href || prev.href,
+                          href: item.href || yahooHref || prev.href,
                         }));
                           setShowSymbolModal(false);
                         }}
@@ -1238,12 +1232,10 @@ function App() {
                         <span className="combo-meta">
                           <span className="combo-name">{label}</span>
                           <span className="combo-tags">
-                            {item.isin && (
-                              <span className="tag">ISIN {item.isin}</span>
-                            )}
-                            {item.mic && (
-                              <span className="tag">{item.mic}</span>
-                            )}
+                            {item.exchange && <span className="tag">{item.exchange}</span>}
+                            {item.typeDisp && <span className="tag">{item.typeDisp}</span>}
+                            {item.sector && <span className="tag">{item.sector}</span>}
+                            {item.industry && <span className="tag">{item.industry}</span>}
                           </span>
                         </span>
                       </button>

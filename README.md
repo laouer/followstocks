@@ -24,8 +24,9 @@ If you prefer plain venv/pip, `pip install -r requirements.txt` works too. API r
 - `POST /prices` `{symbol, price, recorded_at?}` add a price snapshot; `recorded_at` defaults to now.
 - `GET /prices/{symbol}?limit=24` fetch recent snapshots for a symbol.
 - `GET /portfolio` portfolio summary + holdings stats.
-- `GET /search?q=` proxy to Euronext `instrumentSearch/searchJSON` for symbol/ISIN lookup.
-- Background task (enabled by default) that refreshes prices hourly using Euronext ISIN/MIC and stores them as snapshots. Control with `AUTO_REFRESH_ENABLED` (`true`/`false`) and `AUTO_REFRESH_SECONDS` (default `3600`).
+- `GET /search?q=` uses Yahoo Finance search for symbol lookup (used for autocomplete).
+- `GET /quotes/yfinance?symbol=` fetches latest price via Yahoo Finance.
+- Background task (enabled by default) that refreshes prices hourly using Yahoo Finance symbols and stores them as snapshots. Control with `AUTO_REFRESH_ENABLED` (`true`/`false`) and `AUTO_REFRESH_SECONDS` (default `3600`).
 
 Hourly change is computed as the delta between the latest snapshot and the most recent snapshot at least one hour earlier (or the previous snapshot if none are that old).
 Currency is restricted to USD or EUR (default USD).
@@ -57,7 +58,7 @@ Set `VITE_API_BASE` in `.env` if the API is not on `http://localhost:8000`.
 - Portfolio summary (invested, market value, unrealized P/L, last-hour change).
 - Table of holdings with per-position gain %, hourly delta, and last price timestamp.
 - Forms to add holdings and log hourly price snapshots.
-- Add-holding form with live Euronext symbol/ISIN suggestions (`instrumentSearch/searchJSON`).
+- Add-holding form with live Yahoo Finance symbol suggestions.
 - Quick correction form to update shares if you entered them incorrectly.
 
 ### Deployment

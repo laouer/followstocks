@@ -1,13 +1,15 @@
 import asyncio
 import logging
 import os
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from typing import Any, List
 
 import httpx
+import yfinance as yf
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import crud, models, schemas
@@ -18,7 +20,168 @@ logging.basicConfig(level=logging.INFO)
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="FollowStocks API", version="0.1.0")
+
+AUTO_REFRESH_SECONDS = int(os.getenv("AUTO_REFRESH_SECONDS", "3600"))
+AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "true").lower() not in {"0", "false", "no"}
+_refresh_task: asyncio.Task | None = None
+
+
+async def _fetch_yfinance_quote(symbol: str) -> dict:
+    symbol = symbol.upper().strip()
+
+    def _sync_fetch():
+        ticker = yf.Ticker(symbol)
+        try:
+            hist = ticker.history(period="1d", interval="1m")
+            if hist is None or hist.empty:
+                hist = ticker.history(period="5d", interval="1d")
+            if hist is None or hist.empty:
+                return {"price": None, "timestamp": None, "source": "yfinance"}
+            last_row = hist.tail(1)
+            price = float(last_row["Close"].iloc[0])
+            ts = last_row.index[-1].to_pydatetime().isoformat()
+            return {"price": price, "timestamp": ts, "source": "yfinance"}
+        except Exception:
+            return {"price": None, "timestamp": None, "source": "yfinance"}
+
+    return await asyncio.to_thread(_sync_fetch)
+
+
+async def _search_yfinance(query: str) -> list[dict]:
+    def _sync_search():
+        try:
+            # Prefer the official Search helper when available
+            search_cls = getattr(yf, "Search", None)
+            if search_cls:
+                search = search_cls(query)
+                data = search.fetch()
+                if isinstance(data, dict):
+                    quotes = data.get("quotes") or []
+                    if quotes:
+                        return quotes
+        except Exception as exc:  # noqa: BLE001
+            log.debug("yfinance Search helper failed for %s: %s", query, exc)
+        return None
+
+    # Try the Search helper in a thread (it is sync); if it returns results, use them.
+    helper_results = await asyncio.to_thread(_sync_search)
+    if helper_results is not None:
+        return helper_results
+
+    # Fallback to Yahoo Finance search endpoint
+    url = "https://query2.finance.yahoo.com/v1/finance/search"
+    try:
+        async with httpx.AsyncClient(timeout=6.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            resp = await client.get(url, params={"q": query, "quotesCount": 10, "newsCount": 0})
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("quotes", []) or []
+    except Exception as exc:  # noqa: BLE001
+        log.warning("yfinance search failed for %s: %s", query, exc)
+        return []
+
+
+def _upsert_snapshot_from_quote(
+    db: Session, holding: models.Holding, price: float | None, timestamp: str | None
+) -> bool:
+    if price is None:
+        return False
+    try:
+        recorded_at = datetime.fromisoformat(timestamp) if timestamp else datetime.utcnow()
+    except (TypeError, ValueError):
+        recorded_at = datetime.utcnow()
+
+    existing = (
+        db.query(models.PriceSnapshot)
+        .filter(
+            models.PriceSnapshot.holding_id == holding.id,
+            models.PriceSnapshot.recorded_at == recorded_at,
+        )
+        .first()
+    )
+    if existing:
+        existing.price = price
+        holding.updated_at = datetime.utcnow()
+        db.add(existing)
+        db.add(holding)
+        db.commit()
+        return True
+
+    crud.add_price_snapshot(
+        db,
+        holding,
+        schemas.PriceSnapshotCreate(symbol=holding.symbol, price=price, recorded_at=recorded_at),
+    )
+    return True
+
+
+async def refresh_holdings_prices_once() -> None:
+    with SessionLocal() as db:
+        holdings = (
+            db.query(models.Holding)
+            .all()
+        )
+
+        if not holdings:
+            log.info("Auto-refresh: no holdings to refresh.")
+            return
+
+        for holding in holdings:
+            try:
+                quote = await _fetch_yfinance_quote(holding.symbol)
+            except Exception as exc:  # broad catch to keep the loop running
+                log.warning("Auto-refresh: failed to fetch %s: %s", holding.symbol, exc)
+                continue
+
+            price = quote.get("price")
+            try:
+                ts_str = quote.get("timestamp")
+                stored = _upsert_snapshot_from_quote(db, holding, price, ts_str)
+                if stored:
+                    log.info("Auto-refresh: stored price for %s", holding.symbol)
+                else:
+                    log.warning("Auto-refresh: no price returned for %s", holding.symbol)
+            except IntegrityError as exc:
+                db.rollback()
+                log.warning("Auto-refresh: integrity issue for %s: %s", holding.symbol, exc)
+            except Exception as exc:  # broad catch to keep processing
+                db.rollback()
+                log.warning("Auto-refresh: failed to store snapshot for %s: %s", holding.symbol, exc)
+
+
+async def auto_refresh_loop():
+    while AUTO_REFRESH_ENABLED:
+        start = datetime.utcnow()
+        try:
+            await refresh_holdings_prices_once()
+        except Exception as exc:
+            log.exception("Auto-refresh loop error: %s", exc)
+        elapsed = (datetime.utcnow() - start).total_seconds()
+        sleep_for = max(1, AUTO_REFRESH_SECONDS - int(elapsed))
+        await asyncio.sleep(sleep_for)
+
+
+_refresh_task: asyncio.Task | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _refresh_task
+    if AUTO_REFRESH_ENABLED:
+        log.info("Starting auto-refresh task (interval: %ss)", AUTO_REFRESH_SECONDS)
+        _refresh_task = asyncio.create_task(auto_refresh_loop())
+    else:
+        log.info("Auto-refresh is disabled.")
+    try:
+        yield
+    finally:
+        if _refresh_task:
+            _refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await _refresh_task
+
+
+app = FastAPI(title="FollowStocks API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,11 +198,21 @@ def health() -> dict:
 
 
 @app.post("/holdings", response_model=schemas.Holding)
-def create_holding(holding: schemas.HoldingCreate, db: Session = Depends(get_session)):
+async def create_holding(holding: schemas.HoldingCreate, db: Session = Depends(get_session)):
     existing = crud.get_holding_by_symbol(db, holding.symbol)
     if existing:
         raise HTTPException(status_code=400, detail="Holding already exists for that symbol")
-    return crud.create_holding(db, holding)
+    created = crud.create_holding(db, holding)
+    try:
+        quote = await _fetch_yfinance_quote(created.symbol)
+        price = quote.get("price")
+        ts_str = quote.get("timestamp")
+        stored = _upsert_snapshot_from_quote(db, created, price, ts_str)
+        if stored:
+            log.info("Initial price stored for %s after creation", created.symbol)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Failed to fetch/store initial price for %s: %s", created.symbol, exc)
+    return created
 
 
 @app.get("/holdings", response_model=List[schemas.HoldingStats])
@@ -84,141 +257,26 @@ def get_portfolio(db: Session = Depends(get_session)):
     return crud.portfolio_summary(db)
 
 
-EURONEXT_SEARCH_URL = "https://live.euronext.com/fr/instrumentSearch/searchJSON"
-EURONEXT_INTRADAY_URL = "https://live.euronext.com/fr/ajax/getIntradayPriceFilteredData/{isin}-{mic}"
-AUTO_REFRESH_SECONDS = int(os.getenv("AUTO_REFRESH_SECONDS", "3600"))
-AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "true").lower() not in {"0", "false", "no"}
-
-
-async def _fetch_euronext_quote(isin: str, mic: str, client: httpx.AsyncClient) -> dict:
-    resp = await client.get(EURONEXT_INTRADAY_URL.format(isin=isin, mic=mic))
-    resp.raise_for_status()
-    data = resp.json()
-    rows = data.get("rows") or []
-    if not rows:
-        raise ValueError("No trades found")
-    latest = rows[0]
-    raw_price = str(latest.get("price") or "").strip().replace(" ", "").replace(",", ".")
-    price: float | None
-    try:
-        price = float(raw_price)
-    except ValueError:
-        price = None
-    date_raw = str(data.get("date") or "").replace("\\/", "/")
-    time_str = str(latest.get("time") or "00:00:00")
-    ts_iso: str | None = None
-    for fmt in ("%d/%m/%YT%H:%M:%S", "%d-%m-%YT%H:%M:%S"):
-        try:
-            ts_iso = datetime.strptime(f"{date_raw}T{time_str}", fmt).isoformat()
-            break
-        except ValueError:
-            continue
-    return {"price": price, "timestamp": ts_iso, "source": "euronext"}
-
-
 @app.get("/search", response_model=Any)
-async def search_instruments(q: str = Query(..., min_length=1, description="Symbol/ISIN search term")):
+async def search_instruments(q: str = Query(..., min_length=1, description="Symbol search term")):
     try:
-        async with httpx.AsyncClient(timeout=6.0, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "fr"}) as client:
-            resp = await client.get(EURONEXT_SEARCH_URL, params={"q": q})
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail="Upstream search error")
-    except httpx.HTTPError:
-        raise HTTPException(status_code=503, detail="Search service unavailable")
+        results = await _search_yfinance(q)
+        return {"results": results}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail="Search service unavailable") from exc
 
 
-@app.get("/quotes/euronext")
-async def euronext_quote(
-    isin: str = Query(..., min_length=3, description="ISIN code"),
-    mic: str = Query(..., min_length=3, description="Market identifier code"),
+@app.get("/quotes/yfinance")
+async def yfinance_quote(
+    symbol: str = Query(..., min_length=1, description="Ticker symbol"),
 ) -> dict:
-    isin = isin.upper()
-    mic = mic.upper()
+    symbol = symbol.upper().strip()
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            quote = await _fetch_euronext_quote(isin, mic, client)
-            return {**quote, "isin": isin, "mic": mic}
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail="Euronext quote error")
-    except httpx.HTTPError:
-        raise HTTPException(status_code=503, detail="Quote service unavailable")
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Invalid quote data") from exc
-
-
-async def refresh_holdings_prices_once() -> None:
-    with SessionLocal() as db:
-        holdings = (
-            db.query(models.Holding)
-            .filter(models.Holding.isin.isnot(None), models.Holding.mic.isnot(None))
-            .all()
-        )
-
-        if not holdings:
-            log.info("Auto-refresh: no holdings with ISIN/MIC to refresh.")
-            return
-
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            for holding in holdings:
-                try:
-                    quote = await _fetch_euronext_quote(holding.isin, holding.mic, client)
-                except Exception as exc:  # broad catch to keep the loop running
-                    log.warning("Auto-refresh: failed to fetch %s (%s): %s", holding.symbol, holding.isin, exc)
-                    continue
-
-                price = quote.get("price")
-                if price is None:
-                    log.warning("Auto-refresh: no price returned for %s", holding.symbol)
-                    continue
-
-                ts_str = quote.get("timestamp")
-                try:
-                    recorded_at = datetime.fromisoformat(ts_str) if ts_str else datetime.utcnow()
-                except ValueError:
-                    recorded_at = datetime.utcnow()
-
-                try:
-                    crud.add_price_snapshot(
-                        db,
-                        holding,
-                        schemas.PriceSnapshotCreate(symbol=holding.symbol, price=price, recorded_at=recorded_at),
-                    )
-                    log.info("Auto-refresh: stored price for %s at %s", holding.symbol, recorded_at.isoformat())
-                except Exception as exc:  # broad catch to keep processing
-                    log.warning("Auto-refresh: failed to store snapshot for %s: %s", holding.symbol, exc)
-
-
-async def auto_refresh_loop():
-    while AUTO_REFRESH_ENABLED:
-        start = datetime.utcnow()
-        try:
-            await refresh_holdings_prices_once()
-        except Exception as exc:
-            log.exception("Auto-refresh loop error: %s", exc)
-        elapsed = (datetime.utcnow() - start).total_seconds()
-        sleep_for = max(1, AUTO_REFRESH_SECONDS - int(elapsed))
-        await asyncio.sleep(sleep_for)
-
-
-_refresh_task: asyncio.Task | None = None
-
-
-@app.on_event("startup")
-async def _start_auto_refresh():
-    global _refresh_task
-    if not AUTO_REFRESH_ENABLED:
-        log.info("Auto-refresh is disabled.")
-        return
-    log.info("Starting auto-refresh task (interval: %ss)", AUTO_REFRESH_SECONDS)
-    _refresh_task = asyncio.create_task(auto_refresh_loop())
-
-
-@app.on_event("shutdown")
-async def _stop_auto_refresh():
-    global _refresh_task
-    if _refresh_task:
-        _refresh_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await _refresh_task
+        quote = await _fetch_yfinance_quote(symbol)
+        if quote.get("price") is None:
+            raise HTTPException(status_code=502, detail="No price returned from yfinance")
+        return {**quote, "symbol": symbol}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="yfinance quote error") from exc
