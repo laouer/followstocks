@@ -25,6 +25,7 @@ If you prefer plain venv/pip, `pip install -r requirements.txt` works too. API r
 - `GET /prices/{symbol}?limit=24` fetch recent snapshots for a symbol.
 - `GET /portfolio` portfolio summary + holdings stats.
 - `GET /search?q=` proxy to Euronext `instrumentSearch/searchJSON` for symbol/ISIN lookup.
+- Background task (enabled by default) that refreshes prices hourly using Euronext ISIN/MIC and stores them as snapshots. Control with `AUTO_REFRESH_ENABLED` (`true`/`false`) and `AUTO_REFRESH_SECONDS` (default `3600`).
 
 Hourly change is computed as the delta between the latest snapshot and the most recent snapshot at least one hour earlier (or the previous snapshot if none are that old).
 Currency is restricted to USD or EUR (default USD).

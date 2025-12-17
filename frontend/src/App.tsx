@@ -8,9 +8,8 @@ import {
   createHolding,
   updateHolding,
   searchInstruments,
-  fetchEuronextQuote,
-  EuronextQuote,
   deleteHolding,
+  addPriceSnapshot,
 } from "./api";
 
 type Status = {
@@ -25,6 +24,8 @@ type SearchItem = {
   mic?: string;
   href?: string;
 };
+
+type SortField = "instrument" | "acquired_at" | "shares" | "cost" | "last_price" | "value" | "pl";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const ALLOCATION_COLORS = ["#22c55e", "#0ea5e9", "#a855f7", "#f97316", "#fcd34d", "#38bdf8", "#34d399"];
@@ -74,6 +75,9 @@ function App() {
     name: "",
     href: "",
     acquired_at: "",
+    manualPriceEnabled: false,
+    manualLastPrice: "",
+    manualLastPriceAt: "",
   });
   const [shareEditForm, setShareEditForm] = useState({
     holdingId: "",
@@ -86,11 +90,11 @@ function App() {
   const [showSymbolModal, setShowSymbolModal] = useState(false);
   const [showAddHoldingModal, setShowAddHoldingModal] = useState(false);
   const [symbolSearchTerm, setSymbolSearchTerm] = useState("");
-  const [liveQuotes, setLiveQuotes] = useState<Record<string, EuronextQuote>>({});
-  const [lastQuoteFetch, setLastQuoteFetch] = useState(0);
   const [editingHoldingId, setEditingHoldingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [openTooltipId, setOpenTooltipId] = useState<number | null>(null);
+  const [sortField, setSortField] = useState<SortField>("instrument");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
   const summary = portfolio?.summary;
@@ -100,12 +104,11 @@ function App() {
     const total_cost = holdings.reduce((sum, h) => sum + h.shares * h.cost_basis, 0);
     const marketValues: number[] = [];
     holdings.forEach((h) => {
-      const live = liveQuotes[h.symbol];
-      const livePrice = live?.price ?? null;
-      if (livePrice !== null) {
-        marketValues.push(livePrice * h.shares);
-      } else if (h.market_value !== null) {
+      const lastPrice = h.last_price ?? null;
+      if (h.market_value !== null) {
         marketValues.push(h.market_value);
+      } else if (lastPrice !== null) {
+        marketValues.push(lastPrice * h.shares);
       }
     });
     const total_value = marketValues.length ? marketValues.reduce((a, b) => a + b, 0) : null;
@@ -121,17 +124,12 @@ function App() {
       hourly_change_abs: summary?.hourly_change_abs ?? null,
       hourly_change_pct: summary?.hourly_change_pct ?? null,
     };
-  }, [holdings, liveQuotes, summary]);
+  }, [holdings, summary]);
 
   const allocationData = useMemo(() => {
     const points = holdings
       .map((holding) => {
-        const live = liveQuotes[holding.symbol];
-        const price =
-          live?.price ??
-          holding.last_price ??
-          holding.cost_basis ??
-          0;
+        const price = holding.last_price ?? holding.cost_basis ?? 0;
         const value =
           price !== null && price !== undefined
             ? price * holding.shares
@@ -152,13 +150,12 @@ function App() {
       }>;
     const total = points.reduce((sum, p) => sum + p.y, 0);
     return { points, total };
-  }, [holdings, liveQuotes, totalCurrency]);
+  }, [holdings, totalCurrency]);
 
   const plData = useMemo(() => {
     const points = holdings
       .map((holding) => {
-        const live = liveQuotes[holding.symbol];
-        const price = live?.price ?? holding.last_price ?? null;
+        const price = holding.last_price ?? null;
         const marketValue =
           price !== null && price !== undefined
             ? price * holding.shares
@@ -190,7 +187,7 @@ function App() {
       }>;
     const total = points.reduce((sum, p) => sum + p.y, 0);
     return { points, total };
-  }, [holdings, liveQuotes, totalCurrency]);
+  }, [holdings, totalCurrency]);
 
   const allocationOptions = useMemo<Highcharts.Options>(() => {
     const hasData = allocationData.total > 0 && allocationData.points.length > 0;
@@ -390,6 +387,66 @@ function App() {
     };
   }, [plData, totalCurrency]);
 
+  const sortedHoldings = useMemo(() => {
+    const list = [...holdings];
+    const getValue = (h: HoldingStats) => {
+      switch (sortField) {
+        case "instrument":
+          return (h.name || h.symbol || h.isin || "").toString().toLowerCase();
+        case "acquired_at":
+          return h.acquired_at ? new Date(h.acquired_at).getTime() : null;
+        case "shares":
+          return h.shares;
+        case "cost":
+          return h.shares * h.cost_basis;
+        case "last_price":
+          return h.last_price ?? null;
+        case "value": {
+          const mv =
+            h.market_value ??
+            (h.last_price !== null && h.last_price !== undefined ? h.last_price * h.shares : null);
+          return mv;
+        }
+        case "pl": {
+          const mv =
+            h.market_value ??
+            (h.last_price !== null && h.last_price !== undefined ? h.last_price * h.shares : null);
+          const totalCost = h.shares * h.cost_basis;
+          return mv !== null && mv !== undefined ? mv - totalCost : h.gain_abs;
+        }
+        default:
+          return null;
+      }
+    };
+
+    list.sort((a, b) => {
+      const av = getValue(a);
+      const bv = getValue(b);
+      const dir = sortDir === "asc" ? 1 : -1;
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      if (typeof av === "string" && typeof bv === "string") {
+        return av.localeCompare(bv) * dir;
+      }
+      if (av > bv) return dir;
+      if (av < bv) return -dir;
+      return 0;
+    });
+
+    return list;
+  }, [holdings, sortField, sortDir]);
+
+  const handleSort = (field: SortField) => {
+    setSortDir((prev) => (field === sortField ? (prev === "asc" ? "desc" : "asc") : "desc"));
+    setSortField(field);
+  };
+
+  const renderSortIcon = (field: SortField) => {
+    const isActive = field === sortField;
+    const arrow = isActive ? (sortDir === "asc" ? "▲" : "▼") : "↕";
+    return <span className={`sort-arrow ${isActive ? "active" : "inactive"}`}>{arrow}</span>;
+  };
+
   const loadPortfolio = async () => {
     try {
       const res = await fetchPortfolio();
@@ -494,37 +551,6 @@ function App() {
     return () => clearTimeout(timer);
   }, [symbolSearchTerm]);
 
-  useEffect(() => {
-    if (!holdings.length) {
-      setLiveQuotes({});
-      return;
-    }
-    const now = Date.now();
-    if (now - lastQuoteFetch < REFRESH_INTERVAL_MS) return; // throttle to every 5 minutes
-    let cancelled = false;
-    const loadQuotes = async () => {
-      const entries: Array<[string, EuronextQuote]> = [];
-      for (const h of holdings) {
-        if (!h.isin || !h.mic) continue;
-        try {
-          const res = await fetchEuronextQuote(h.isin, h.mic);
-          entries.push([h.symbol, res.data]);
-        } catch {
-          entries.push([h.symbol, { isin: h.isin, mic: h.mic, price: null, timestamp: null, source: "euronext" }]);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 400)); // slow down to avoid 429s
-      }
-      if (!cancelled) {
-        setLiveQuotes(Object.fromEntries(entries));
-        setLastQuoteFetch(Date.now());
-      }
-    };
-    loadQuotes();
-    return () => {
-      cancelled = true;
-    };
-  }, [holdings, lastQuoteFetch]);
-
   const handleAddHolding = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!holdingForm.symbol || !holdingForm.shares || !holdingForm.cost_basis) {
@@ -562,9 +588,29 @@ function App() {
         name: "",
         href: "",
         acquired_at: "",
+        manualPriceEnabled: false,
+        manualLastPrice: "",
+        manualLastPriceAt: "",
       });
       setEditingHoldingId(null);
       await loadPortfolio();
+      if (holdingForm.manualPriceEnabled && holdingForm.manualLastPrice) {
+        try {
+          const recorded_at = holdingForm.manualLastPriceAt || undefined;
+          await addPriceSnapshot({
+            symbol: payload.symbol,
+            price: Number(holdingForm.manualLastPrice),
+            recorded_at,
+          });
+          await loadPortfolio();
+        } catch (err) {
+          // non-blocking; just surface a message
+          setStatus({
+            kind: "error",
+            message: "Holding saved but manual price failed",
+          });
+        }
+      }
       setStatus({ kind: "success", message: editingHoldingId ? "Holding updated" : "Holding added" });
       setShowAddHoldingModal(false);
     } catch (err) {
@@ -753,20 +799,33 @@ function App() {
           ) : (
             <div className="table">
               <div className="table-head">
-                <span>Instrument</span>
-                <span>Acquisition</span>
-                <span>Shares</span>
-                <span>Cost / Total</span>
-                <span>Last price</span>
-                <span>Value</span>
-                <span>P/L</span>
+                <button type="button" className="table-sort" onClick={() => handleSort("instrument")}>
+                  Instrument {renderSortIcon("instrument")}
+                </button>
+                <button type="button" className="table-sort" onClick={() => handleSort("acquired_at")}>
+                  Acquisition {renderSortIcon("acquired_at")}
+                </button>
+                <button type="button" className="table-sort" onClick={() => handleSort("shares")}>
+                  Shares {renderSortIcon("shares")}
+                </button>
+                <button type="button" className="table-sort" onClick={() => handleSort("cost")}>
+                  Cost / Total {renderSortIcon("cost")}
+                </button>
+                <button type="button" className="table-sort" onClick={() => handleSort("last_price")}>
+                  Last price {renderSortIcon("last_price")}
+                </button>
+                <button type="button" className="table-sort" onClick={() => handleSort("value")}>
+                  Value {renderSortIcon("value")}
+                </button>
+                <button type="button" className="table-sort" onClick={() => handleSort("pl")}>
+                  P/L {renderSortIcon("pl")}
+                </button>
               </div>
               <div className="table-body">
-                {holdings.map((holding: HoldingStats) => {
+                {sortedHoldings.map((holding: HoldingStats) => {
                   const totalCost = holding.shares * holding.cost_basis;
-                  const live = liveQuotes[holding.symbol];
-                  const lastPrice = live?.price ?? holding.last_price;
-                  const lastTime = live?.timestamp ?? holding.last_snapshot_at;
+                  const lastPrice = holding.last_price;
+                  const lastTime = holding.last_snapshot_at;
                   const marketValue = lastPrice !== null && lastPrice !== undefined ? lastPrice * holding.shares : holding.market_value;
                   const gainAbs = marketValue !== null && marketValue !== undefined ? marketValue - totalCost : holding.gain_abs;
                   const gainPct = marketValue !== null && marketValue !== undefined && totalCost > 0 ? gainAbs / totalCost : holding.gain_pct;
@@ -801,21 +860,24 @@ function App() {
                             className="icon-button"
                             aria-label={`Edit ${holding.symbol}`}
                             onClick={() => {
-                              setHoldingForm({
-                                symbol: holding.symbol,
-                                shares: String(holding.shares),
-                                cost_basis: String(holding.cost_basis),
-                                currency: holding.currency,
-                                isin: holding.isin || "",
-                                mic: holding.mic || "",
-                                name: holding.name || "",
-                                href: holding.href || "",
-                                acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
-                              });
-                              setSymbolSearchTerm(holding.symbol);
-                              setEditingHoldingId(holding.id);
-                              setShowAddHoldingModal(true);
-                            }}
+                            setHoldingForm({
+                              symbol: holding.symbol,
+                              shares: String(holding.shares),
+                              cost_basis: String(holding.cost_basis),
+                              currency: holding.currency,
+                              isin: holding.isin || "",
+                              mic: holding.mic || "",
+                              name: holding.name || "",
+                              href: holding.href || "",
+                              acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
+                              manualPriceEnabled: false,
+                              manualLastPrice: "",
+                              manualLastPriceAt: "",
+                            });
+                            setSymbolSearchTerm(holding.symbol);
+                            setEditingHoldingId(holding.id);
+                            setShowAddHoldingModal(true);
+                          }}
                             >
                               ✏️
                             </button>
@@ -841,9 +903,6 @@ function App() {
                       <span>
                         {formatMoney(lastPrice, holding.currency)}
                         <small>{formatDateTime(lastTime)}</small>
-                        {live?.source === "euronext" && (
-                          <small className="muted">Euronext live</small>
-                        )}
                       </span>
                       <span>
                         {formatMoney(marketValue, holding.currency)}
@@ -1026,6 +1085,51 @@ function App() {
                     <option value="EUR">EUR</option>
                   </select>
                 </label>
+                <label className="inline-row">
+                  <input
+                    type="checkbox"
+                    checked={holdingForm.manualPriceEnabled}
+                    onChange={(e) =>
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        manualPriceEnabled: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span className="muted">Manual last price (use for non-standard instruments like FCPE)</span>
+                </label>
+                {holdingForm.manualPriceEnabled && (
+                  <>
+                    <label>
+                      Last price
+                      <input
+                        type="number"
+                        step="any"
+                        placeholder="Enter latest price"
+                        value={holdingForm.manualLastPrice}
+                        onChange={(e) =>
+                          setHoldingForm((prev) => ({
+                            ...prev,
+                            manualLastPrice: e.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      Last update
+                      <input
+                        type="datetime-local"
+                        value={holdingForm.manualLastPriceAt}
+                        onChange={(e) =>
+                          setHoldingForm((prev) => ({
+                            ...prev,
+                            manualLastPriceAt: e.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </>
+                )}
               </div>
 
               <div className="symbol-modal-footer">
