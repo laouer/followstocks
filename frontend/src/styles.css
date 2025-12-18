@@ -148,6 +148,7 @@ body {
   flex-direction: column;
   gap: 8px;
   box-shadow: var(--shadow);
+  position: relative;
 }
 
 .summary-chart-header h3 {
@@ -156,6 +157,30 @@ body {
 
 .chart-wrapper {
   min-height: 280px;
+}
+
+.chart-wrapper.large {
+  min-height: 480px;
+}
+
+.zoom-button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+}
+
+.donut-center {
+  color: var(--text);
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.donut-center strong {
+  display: block;
+  font-size: 16px;
+  margin-top: 4px;
 }
 
 .stat {
@@ -512,6 +537,18 @@ body {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.symbol-modal.full {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+}
+
+.symbol-modal-backdrop.full {
+  padding: 0;
 }
 
 

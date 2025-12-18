@@ -47,6 +47,27 @@ async def _fetch_yfinance_quote(symbol: str) -> dict:
     return await asyncio.to_thread(_sync_fetch)
 
 
+async def _fetch_fx_rate(base: str, quote: str) -> float | None:
+    base = base.upper().strip()
+    quote = quote.upper().strip()
+    if base == quote:
+        return 1.0
+    symbol = f"{base}{quote}=X"
+
+    def _sync_fetch():
+        ticker = yf.Ticker(symbol)
+        try:
+            hist = ticker.history(period="5d", interval="1d")
+            if hist is None or hist.empty:
+                return None
+            last_row = hist.tail(1)
+            return float(last_row["Close"].iloc[0])
+        except Exception:
+            return None
+
+    return await asyncio.to_thread(_sync_fetch)
+
+
 async def _search_yfinance(query: str) -> list[dict]:
     def _sync_search():
         try:
@@ -280,3 +301,19 @@ async def yfinance_quote(
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail="yfinance quote error") from exc
+
+
+@app.get("/fx")
+async def fx_rate(
+    base: str = Query(..., min_length=3, description="Base currency, e.g., USD"),
+    quote: str = Query(..., min_length=3, description="Quote currency, e.g., EUR"),
+) -> dict:
+    try:
+        rate = await _fetch_fx_rate(base, quote)
+        if rate is None:
+            raise HTTPException(status_code=502, detail="Unable to fetch FX rate")
+        return {"base": base.upper(), "quote": quote.upper(), "rate": rate}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="FX service unavailable") from exc

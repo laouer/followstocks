@@ -104,4 +104,8 @@ export async function searchInstruments(query: string) {
   return api.get("/search", { params: { q: query } });
 }
 
+export async function fetchFxRate(base: string, quote: string) {
+  return api.get("/fx", { params: { base, quote } });
+}
+
 export default api;

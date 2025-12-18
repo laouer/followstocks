@@ -10,6 +10,7 @@ import {
   searchInstruments,
   deleteHolding,
   addPriceSnapshot,
+  fetchFxRate,
 } from "./api";
 
 type Status = {
@@ -33,7 +34,28 @@ type SearchItem = {
 type SortField = "instrument" | "acquired_at" | "shares" | "cost" | "last_price" | "value" | "pl";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const ALLOCATION_COLORS = ["#22c55e", "#0ea5e9", "#a855f7", "#f97316", "#fcd34d", "#38bdf8", "#34d399"];
+const ALLOCATION_COLORS = [
+  "#22c55e",
+  "#0ea5e9",
+  "#a855f7",
+  "#f97316",
+  "#fcd34d",
+  "#38bdf8",
+  "#34d399",
+  "#ef4444",
+  "#10b981",
+  "#3b82f6",
+  "#ec4899",
+  "#6366f1",
+  "#14b8a6",
+  "#f59e0b",
+  "#8b5cf6",
+  "#22d3ee",
+  "#84cc16",
+  "#fb7185",
+  "#c084fc",
+  "#f43f5e",
+];
 const LOSS_COLOR = "#fb7185";
 
 const formatPercent = (value?: number | null) => {
@@ -41,19 +63,32 @@ const formatPercent = (value?: number | null) => {
   return `${(value * 100).toFixed(2)}%`;
 };
 
+const formatPercentSigned = (value?: number | null) => {
+  if (value === null || value === undefined) return "—";
+  const sign = value >= 0 ? "+" : "-";
+  return `${sign}${(Math.abs(value) * 100).toFixed(2)}%`;
+};
+
 const formatMoney = (value?: number | null, currency = "EUR") => {
   if (value === null || value === undefined) return "—";
   if (currency === "EUR") {
     return `${value.toLocaleString("fr-FR", {
-      minimumFractionDigits: 2,
+      minimumFractionDigits: 0,
       maximumFractionDigits: 2,
     })} €`;
   }
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: currency || "USD",
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   }).format(value);
+};
+
+const formatMoneySigned = (value?: number | null, currency = "EUR") => {
+  if (value === null || value === undefined) return formatMoney(value, currency);
+  const sign = value >= 0 ? "+" : "-";
+  return `${sign}${formatMoney(Math.abs(value), currency)}`;
 };
 
 const formatDateTime = (value?: string | null) => {
@@ -100,20 +135,69 @@ function App() {
   const [openTooltipId, setOpenTooltipId] = useState<number | null>(null);
   const [sortField, setSortField] = useState<SortField>("instrument");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [fxRates, setFxRates] = useState<Record<string, number>>({});
+  const DISPLAY_CURRENCY = "EUR";
+  const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | null>(null);
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
   const summary = portfolio?.summary;
-  const totalCurrency = holdings[0]?.currency || "EUR";
+  const totalCurrency = DISPLAY_CURRENCY;
+
+  const convertAmount = (value: number | null | undefined, currency: string) => {
+    if (value === null || value === undefined) return null;
+    const curr = (currency || "").toUpperCase();
+    if (curr === DISPLAY_CURRENCY) return value;
+    const key = `${curr}->${DISPLAY_CURRENCY}`;
+    const rate = fxRates[key];
+    return rate ? value * rate : value;
+  };
+
+  const displayMoney = (value: number | null | undefined, currency: string) => {
+    const converted = convertAmount(value, currency);
+    return formatMoney(converted, DISPLAY_CURRENCY);
+  };
+
+  const displayMoneySigned = (value: number | null | undefined, currency: string) => {
+    const converted = convertAmount(value, currency);
+    return formatMoneySigned(converted, DISPLAY_CURRENCY);
+  };
+
+const renderAmount = (value: number | null | undefined, currency: string) => {
+  const converted = convertAmount(value, currency);
+  const isConverted = currency.toUpperCase() !== DISPLAY_CURRENCY && converted !== null && converted !== undefined;
+  const primary = isConverted ? formatMoney(converted, DISPLAY_CURRENCY) : formatMoney(value, currency);
+  const secondary = isConverted ? formatMoney(value, currency) : null;
+  return { primary, secondary };
+};
+
+const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string | null) => {
+  if (gainPct === null || gainPct === undefined) return null;
+  if (!acquired_at) return null;
+  const acquired = new Date(acquired_at).getTime();
+  if (Number.isNaN(acquired)) return null;
+  const days = (Date.now() - acquired) / (1000 * 60 * 60 * 24);
+  if (days <= 0) return null;
+  const annualized = Math.pow(1 + gainPct, 365 / days) - 1;
+  return annualized;
+};
 
   const enhancedSummary = useMemo(() => {
-    const total_cost = holdings.reduce((sum, h) => sum + h.shares * h.cost_basis, 0);
+    const total_cost = holdings.reduce(
+      (sum, h) => sum + (convertAmount(h.shares * h.cost_basis, h.currency) || 0),
+      0
+    );
     const marketValues: number[] = [];
     holdings.forEach((h) => {
       const lastPrice = h.last_price ?? null;
-      if (h.market_value !== null) {
-        marketValues.push(h.market_value);
-      } else if (lastPrice !== null) {
-        marketValues.push(lastPrice * h.shares);
+      const mvRaw =
+        h.market_value !== null && h.market_value !== undefined
+          ? h.market_value
+          : lastPrice !== null
+            ? lastPrice * h.shares
+            : null;
+      const mv = convertAmount(mvRaw, h.currency);
+      if (mv !== null && mv !== undefined) {
+        marketValues.push(mv);
       }
     });
     const total_value = marketValues.length ? marketValues.reduce((a, b) => a + b, 0) : null;
@@ -135,10 +219,9 @@ function App() {
     const points = holdings
       .map((holding) => {
         const price = holding.last_price ?? holding.cost_basis ?? 0;
-        const value =
-          price !== null && price !== undefined
-            ? price * holding.shares
-            : 0;
+        const nativeValue =
+          price !== null && price !== undefined ? price * holding.shares : 0;
+        const value = convertAmount(nativeValue, holding.currency) ?? 0;
         if (!value || Number.isNaN(value) || value <= 0) return null;
         return {
           name: holding.symbol,
@@ -161,15 +244,14 @@ function App() {
     const points = holdings
       .map((holding) => {
         const price = holding.last_price ?? null;
-        const marketValue =
-          price !== null && price !== undefined
-            ? price * holding.shares
-            : holding.market_value;
+        const marketValueNative =
+          price !== null && price !== undefined ? price * holding.shares : holding.market_value;
+        const marketValue = convertAmount(marketValueNative, holding.currency);
         const totalCost = holding.shares * holding.cost_basis;
         const gainAbs =
           marketValue !== null && marketValue !== undefined
-            ? marketValue - totalCost
-            : holding.gain_abs;
+            ? marketValue - (convertAmount(totalCost, holding.currency) || 0)
+            : convertAmount(holding.gain_abs, holding.currency);
         if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return null;
         const amount = Math.abs(gainAbs);
         if (!amount || Number.isNaN(amount)) return null;
@@ -199,9 +281,9 @@ function App() {
     const data = hasData
       ? allocationData.points.map((p, idx) => ({
           name: p.name,
-          y: p.y,
+          y: Math.ceil(p.y),
           color: ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
-          currency: p.currency,
+          currency: DISPLAY_CURRENCY,
           displayName: p.label,
         }))
       : [
@@ -219,7 +301,13 @@ function App() {
         backgroundColor: "transparent",
         height: 300,
       },
-      title: { text: undefined },
+      title: {
+        useHTML: true,
+        align: "center",
+        verticalAlign: "middle",
+        floating: true,
+        text: `<div class="donut-center"><strong>${formatMoney(Math.ceil(allocationData.total), totalCurrency)}</strong></div>`,
+      },
       tooltip: {
         useHTML: true,
         backgroundColor: "rgba(12, 18, 36, 0.95)",
@@ -295,11 +383,11 @@ function App() {
     const data = hasData
       ? plData.points.map((p, idx) => ({
           name: p.name,
-          y: p.y,
+          y: Math.ceil(p.y),
           color: p.isLoss
             ? LOSS_COLOR
             : ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
-          currency: p.currency,
+          currency: DISPLAY_CURRENCY,
           displayName: p.label,
           rawGain: p.gain,
           isLoss: p.isLoss,
@@ -319,7 +407,13 @@ function App() {
         backgroundColor: "transparent",
         height: 300,
       },
-      title: { text: undefined },
+      title: {
+        useHTML: true,
+        align: "center",
+        verticalAlign: "middle",
+        floating: true,
+        text: `<div class="donut-center"><strong>${formatMoneySigned(enhancedSummary.total_gain_abs, totalCurrency)}</strong></div>`,
+      },
       tooltip: {
         useHTML: true,
         backgroundColor: "rgba(12, 18, 36, 0.95)",
@@ -403,21 +497,25 @@ function App() {
         case "shares":
           return h.shares;
         case "cost":
-          return h.shares * h.cost_basis;
+          return convertAmount(h.shares * h.cost_basis, h.currency);
         case "last_price":
-          return h.last_price ?? null;
+          return convertAmount(h.last_price, h.currency);
         case "value": {
           const mv =
             h.market_value ??
             (h.last_price !== null && h.last_price !== undefined ? h.last_price * h.shares : null);
-          return mv;
+          return convertAmount(mv, h.currency);
         }
         case "pl": {
           const mv =
             h.market_value ??
             (h.last_price !== null && h.last_price !== undefined ? h.last_price * h.shares : null);
           const totalCost = h.shares * h.cost_basis;
-          return mv !== null && mv !== undefined ? mv - totalCost : h.gain_abs;
+          const convMv = convertAmount(mv, h.currency);
+          const convCost = convertAmount(totalCost, h.currency);
+          return convMv !== null && convMv !== undefined && convCost !== null && convCost !== undefined
+            ? convMv - convCost
+            : convertAmount(h.gain_abs, h.currency);
         }
         default:
           return null;
@@ -486,6 +584,40 @@ function App() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    const needed = new Set<string>();
+    holdings.forEach((h) => {
+      const cur = (h.currency || "").toUpperCase();
+      if (cur && cur !== DISPLAY_CURRENCY) {
+        const key = `${cur}->${DISPLAY_CURRENCY}`;
+        if (!fxRates[key]) {
+          needed.add(cur);
+        }
+      }
+    });
+    if (needed.size === 0) return;
+    let cancelled = false;
+    const loadFx = async () => {
+      for (const cur of needed) {
+        try {
+          const res = await fetchFxRate(cur, DISPLAY_CURRENCY);
+          if (!cancelled) {
+            const rate = res.data?.rate;
+            if (rate) {
+              setFxRates((prev) => ({ ...prev, [`${cur}->${DISPLAY_CURRENCY}`]: rate }));
+            }
+          }
+        } catch {
+          // ignore; will retry on next render
+        }
+      }
+    };
+    loadFx();
+    return () => {
+      cancelled = true;
+    };
+  }, [holdings, DISPLAY_CURRENCY, fxRates]);
 
   useEffect(() => {
     loadPortfolio();
@@ -694,11 +826,11 @@ function App() {
             <div className="summary-grid">
               <div className="stat">
                 <p>Invested</p>
-                <h3>{formatMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
+                <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
               </div>
               <div className="stat">
                 <p>Value</p>
-                <h3>{formatMoney(enhancedSummary.total_value, totalCurrency)}</h3>
+                <h3>{displayMoney(enhancedSummary.total_value, totalCurrency)}</h3>
               </div>
               <div className="stat">
                 <p>Latent P/L</p>
@@ -712,40 +844,56 @@ function App() {
                       : "negative"
                   }
                 >
-                  {formatMoney(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
+                  {displayMoneySigned(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
                   <span className="muted">
-                    ({formatPercent(enhancedSummary.total_gain_pct)})
+                    ({formatPercentSigned(enhancedSummary.total_gain_pct)})
                   </span>
                 </h3>
               </div>
             </div>
-            <div className="summary-charts">
-              <div className="summary-chart">
-                <div className="summary-chart-header">
-                  <p className="eyebrow">Allocation</p>
-                  <h3>Portfolio mix</h3>
-                  <p className="muted helper">Based on latest prices</p>
-                </div>
-                <div className="chart-wrapper">
-                  <HighchartsReact
-                    highcharts={Highcharts}
-                    options={allocationOptions}
+              <div className="summary-charts">
+                <div className="summary-chart">
+                  <div className="summary-chart-header">
+                    <p className="eyebrow">Allocation</p>
+                    <h3>Portfolio mix</h3>
+                    <p className="muted helper">Based on latest prices</p>
+                    <button
+                      type="button"
+                      className="icon-button compact zoom-button"
+                      onClick={() => setZoomedChart("allocation")}
+                      aria-label="Expand allocation chart"
+                    >
+                      🔍
+                    </button>
+                  </div>
+                  <div className="chart-wrapper">
+                    <HighchartsReact
+                      highcharts={Highcharts}
+                      options={allocationOptions}
                   />
                 </div>
                 {(!allocationData.points.length || !allocationData.total) && (
                   <p className="muted helper">Add holdings to see the breakdown.</p>
                 )}
-              </div>
+                </div>
 
-              <div className="summary-chart">
-                <div className="summary-chart-header">
-                  <p className="eyebrow">Performance</p>
-                  <h3>P/L mix</h3>
-                  <p className="muted helper">Absolute gains vs losses by holding</p>
-                </div>
-                <div className="chart-wrapper">
-                  <HighchartsReact highcharts={Highcharts} options={plOptions} />
-                </div>
+                <div className="summary-chart">
+                  <div className="summary-chart-header">
+                    <p className="eyebrow">Performance</p>
+                    <h3>P/L mix</h3>
+                    <p className="muted helper">Absolute gains vs losses by holding</p>
+                    <button
+                      type="button"
+                      className="icon-button compact zoom-button"
+                      onClick={() => setZoomedChart("pl")}
+                      aria-label="Expand P/L chart"
+                    >
+                      🔍
+                    </button>
+                  </div>
+                  <div className="chart-wrapper">
+                    <HighchartsReact highcharts={Highcharts} options={plOptions} />
+                  </div>
                 {(!plData.points.length || !plData.total) && (
                   <p className="muted helper">Add holdings/prices to see the P/L breakdown.</p>
                 )}
@@ -820,9 +968,14 @@ function App() {
                   const totalCost = holding.shares * holding.cost_basis;
                   const lastPrice = holding.last_price;
                   const lastTime = holding.last_snapshot_at;
-                  const marketValue = lastPrice !== null && lastPrice !== undefined ? lastPrice * holding.shares : holding.market_value;
+                  const marketValue =
+                    lastPrice !== null && lastPrice !== undefined ? lastPrice * holding.shares : holding.market_value;
                   const gainAbs = marketValue !== null && marketValue !== undefined ? marketValue - totalCost : holding.gain_abs;
                   const gainPct = marketValue !== null && marketValue !== undefined && totalCost > 0 ? gainAbs / totalCost : holding.gain_pct;
+                  const lastPriceDisplay = renderAmount(lastPrice, holding.currency);
+                  const valueDisplay = renderAmount(marketValue, holding.currency);
+                  const gainDisplay = renderAmount(gainAbs, holding.currency);
+                  const annualized = computeAnnualizedReturn(gainPct, holding.acquired_at);
                   const instrumentName = holding.name || holding.symbol || holding.isin || "Unknown";
                   const instrumentHref = holding.href || "";
                   const gainClass =
@@ -845,7 +998,7 @@ function App() {
                               {instrumentName}
                             </a>
                           ) : (
-                            <span className="name-link muted">{instrumentName}</span>
+                            <span className="muted">{instrumentName}</span>
                           )}
                         </div>
                         <div className="instrument-actions column">
@@ -894,17 +1047,21 @@ function App() {
                         </small>
                       </span>
                       <span>
-                        {formatMoney(lastPrice, holding.currency)}
+                        {lastPriceDisplay.primary}
                         <small>{formatDateTime(lastTime)}</small>
+                        {lastPriceDisplay.secondary && <small>{lastPriceDisplay.secondary}</small>}
                       </span>
                       <span>
-                        {formatMoney(marketValue, holding.currency)}
+                        {valueDisplay.primary}
+                        {valueDisplay.secondary && <small>{valueDisplay.secondary}</small>}
                       </span>
                       <span className={gainClass}>
-                        {gainAbs !== null && gainAbs !== undefined
-                          ? `${gainAbs >= 0 ? "+" : "-"}${formatMoney(Math.abs(gainAbs), holding.currency)}`
-                          : formatMoney(gainAbs, holding.currency)}
-                        <small>{formatPercent(gainPct)}</small>
+                        {gainDisplay.primary}
+                        {gainDisplay.secondary && <small>{gainDisplay.secondary}</small>}
+                        <small>{formatPercentSigned(gainPct)}</small>
+                        {annualized !== null && (
+                          <small>Ann.: {formatPercentSigned(annualized)}</small>
+                        )}
                       </span>
                     </div>
                   );
@@ -1255,6 +1412,45 @@ function App() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {zoomedChart && (
+        <div className="symbol-modal-backdrop full" onClick={() => setZoomedChart(null)}>
+          <div
+            className="symbol-modal full"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="zoom-chart-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">{zoomedChart === "allocation" ? "Allocation" : "Performance"}</p>
+                <h3 id="zoom-chart-title">
+                  {zoomedChart === "allocation" ? "Portfolio mix" : "P/L mix"}
+                </h3>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                onClick={() => setZoomedChart(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="chart-wrapper large">
+              <HighchartsReact
+                highcharts={Highcharts}
+                options={{
+                  ...(zoomedChart === "allocation" ? allocationOptions : plOptions),
+                  chart: {
+                    ...(zoomedChart === "allocation" ? allocationOptions.chart : plOptions.chart),
+                    height: 520,
+                  },
+                }}
+              />
             </div>
           </div>
         </div>
