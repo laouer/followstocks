@@ -31,4 +31,4 @@ ENV PYTHONUNBUFFERED=1 \
 EXPOSE 8000 4173
 
 # Serve frontend statically on 4173 and backend API on 8000
-CMD /bin/sh -c "python -m http.server 4173 --directory /app/frontend/dist & uvicorn app.main:app --host 0.0.0.0 --port 8000"
+CMD bash -c "python -m http.server 4173 --directory /app/frontend/dist & uvicorn app.main:app --host 0.0.0.0 --port 8000"
