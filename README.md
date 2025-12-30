@@ -17,30 +17,52 @@ If you prefer plain venv/pip, `pip install -r requirements.txt` works too. API r
 
 ### Key endpoints
 - `GET /health` simple readiness check.
-- `POST /holdings` `{symbol, shares, cost_basis, currency?}` create a holding (symbol must be unique).
+- `POST /auth/register` `{email, password, name?}` register and receive a JWT.
+- `POST /auth/login` `{email, password}` receive a JWT.
+- `GET /auth/me` get the current user (requires Bearer token).
+- `POST /holdings` `{symbol, shares, cost_basis, currency?}` create a holding (duplicate symbols allowed).
 - `GET /holdings` list holdings with computed stats (market value, gain %, hourly change).
 - `PUT /holdings/{id}` partial update for shares/cost/currency/symbol.
 - `DELETE /holdings/{id}` remove a holding and its snapshots.
-- `POST /prices` `{symbol, price, recorded_at?}` add a price snapshot; `recorded_at` defaults to now.
-- `GET /prices/{symbol}?limit=24` fetch recent snapshots for a symbol.
+- `POST /prices` `{holding_id, price, recorded_at?}` add a price snapshot; `recorded_at` defaults to now.
+- `GET /prices/{holding_id}?limit=24` fetch recent snapshots for a holding.
 - `GET /portfolio` portfolio summary + holdings stats.
 - `GET /search?q=` uses Yahoo Finance search for symbol lookup (used for autocomplete).
 - `GET /quotes/yfinance?symbol=` fetches latest price via Yahoo Finance.
 - Background task (enabled by default) that refreshes prices hourly using Yahoo Finance symbols and stores them as snapshots. Control with `AUTO_REFRESH_ENABLED` (`true`/`false`) and `AUTO_REFRESH_SECONDS` (default `3600`).
+
+Holdings, prices, and portfolio endpoints require `Authorization: Bearer <token>`.
 
 Hourly change is computed as the delta between the latest snapshot and the most recent snapshot at least one hour earlier (or the previous snapshot if none are that old).
 Currency is restricted to USD or EUR (default USD).
 
 #### Quick seed (optional)
 ```bash
-curl -X POST http://localhost:8000/holdings -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"changeme123"}'
+
+# Copy the access_token from the response and set it here:
+TOKEN="PASTE_TOKEN_HERE"
+
+curl -X POST http://localhost:8000/holdings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"symbol":"AAPL","shares":10,"cost_basis":150}'
-curl -X POST http://localhost:8000/holdings -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/holdings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"symbol":"MSFT","shares":5,"cost_basis":280}'
-curl -X POST http://localhost:8000/prices -H "Content-Type: application/json" \
-  -d '{"symbol":"AAPL","price":180}'
-curl -X POST http://localhost:8000/prices -H "Content-Type: application/json" \
-  -d '{"symbol":"MSFT","price":320}'
+
+# Copy the holding ids from the responses and use them here:
+curl -X POST http://localhost:8000/prices \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"holding_id":1,"price":180}'
+curl -X POST http://localhost:8000/prices \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"holding_id":2,"price":320}'
 ```
 
 ## Frontend (React + Vite)
@@ -68,3 +90,5 @@ Set `VITE_API_BASE` in `.env` if the API is not on `http://localhost:8000`.
 ## Notes
 - Prices are user-supplied; integrate a market data source by posting snapshots hourly.
 - SQLite database (`backend/data.db`) is created automatically on first run. Back it up if needed.
+- JWT settings: set `JWT_SECRET` and optionally `ACCESS_TOKEN_EXPIRE_MINUTES` (default 1440).
+- If you already have a `data.db`, add a migration for the new `users` table + `holdings.user_id`, or delete the file to recreate the schema.

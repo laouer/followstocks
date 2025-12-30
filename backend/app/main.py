@@ -7,12 +7,12 @@ from typing import Any, List
 
 import httpx
 import yfinance as yf
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import crud, models, schemas
+from . import auth, crud, models, schemas
 from .database import Base, SessionLocal, engine, get_session
 
 log = logging.getLogger("followstocks")
@@ -131,7 +131,7 @@ def _upsert_snapshot_from_quote(
     crud.add_price_snapshot(
         db,
         holding,
-        schemas.PriceSnapshotCreate(symbol=holding.symbol, price=price, recorded_at=recorded_at),
+        schemas.PriceSnapshotCreate(holding_id=holding.id, price=price, recorded_at=recorded_at),
     )
     return True
 
@@ -218,12 +218,37 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/holdings", response_model=schemas.Holding)
-async def create_holding(holding: schemas.HoldingCreate, db: Session = Depends(get_session)):
-    existing = crud.get_holding_by_symbol(db, holding.symbol)
+@app.post("/auth/register", response_model=schemas.TokenResponse)
+def register_user(payload: schemas.UserCreate, db: Session = Depends(get_session)):
+    existing = crud.get_user_by_email(db, payload.email)
     if existing:
-        raise HTTPException(status_code=400, detail="Holding already exists for that symbol")
-    created = crud.create_holding(db, holding)
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = crud.create_user(db, payload, auth.hash_password(payload.password))
+    token = auth.create_access_token(user)
+    return {"access_token": token, "token_type": "bearer", "user": user}
+
+
+@app.post("/auth/login", response_model=schemas.TokenResponse)
+def login_user(payload: schemas.LoginRequest, db: Session = Depends(get_session)):
+    user = crud.get_user_by_email(db, payload.email)
+    if not user or not auth.verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    token = auth.create_access_token(user)
+    return {"access_token": token, "token_type": "bearer", "user": user}
+
+
+@app.get("/auth/me", response_model=schemas.UserPublic)
+def get_me(current_user: models.User = Depends(auth.get_current_user)):
+    return current_user
+
+
+@app.post("/holdings", response_model=schemas.Holding)
+async def create_holding(
+    holding: schemas.HoldingCreate,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    created = crud.create_holding(db, current_user.id, holding)
     try:
         quote = await _fetch_yfinance_quote(created.symbol)
         price = quote.get("price")
@@ -237,45 +262,69 @@ async def create_holding(holding: schemas.HoldingCreate, db: Session = Depends(g
 
 
 @app.get("/holdings", response_model=List[schemas.HoldingStats])
-def list_holdings(db: Session = Depends(get_session)):
-    return crud.get_holdings_with_stats(db)
+def list_holdings(
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    return crud.get_holdings_with_stats(db, current_user.id)
 
 
 @app.put("/holdings/{holding_id}", response_model=schemas.Holding)
-def update_holding(holding_id: int, payload: schemas.HoldingUpdate, db: Session = Depends(get_session)):
-    holding = crud.get_holding(db, holding_id)
+def update_holding(
+    holding_id: int,
+    payload: schemas.HoldingUpdate,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    holding = crud.get_holding(db, current_user.id, holding_id)
     if not holding:
         raise HTTPException(status_code=404, detail="Holding not found")
     return crud.update_holding(db, holding, payload)
 
 
 @app.delete("/holdings/{holding_id}")
-def remove_holding(holding_id: int, db: Session = Depends(get_session)):
-    deleted = crud.delete_holding(db, holding_id)
+def remove_holding(
+    holding_id: int,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    deleted = crud.delete_holding(db, current_user.id, holding_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Holding not found")
     return {"status": "deleted"}
 
 
 @app.post("/prices", response_model=schemas.PriceSnapshot)
-def add_price(snapshot: schemas.PriceSnapshotCreate, db: Session = Depends(get_session)):
-    holding = crud.get_holding_by_symbol(db, snapshot.symbol)
+def add_price(
+    snapshot: schemas.PriceSnapshotCreate,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    holding = crud.get_holding(db, current_user.id, snapshot.holding_id)
     if not holding:
-        raise HTTPException(status_code=404, detail="Holding not found for that symbol")
+        raise HTTPException(status_code=404, detail="Holding not found")
     return crud.add_price_snapshot(db, holding, snapshot)
 
 
-@app.get("/prices/{symbol}", response_model=List[schemas.PriceSnapshot])
-def get_prices(symbol: str, limit: int = Query(default=24, ge=1, le=500), db: Session = Depends(get_session)):
-    prices = crud.get_snapshots_for_symbol(db, symbol, limit=limit)
+@app.get("/prices/{holding_id}", response_model=List[schemas.PriceSnapshot])
+def get_prices(
+    holding_id: int,
+    limit: int = Query(default=24, ge=1, le=500),
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    prices = crud.get_snapshots_for_holding(db, current_user.id, holding_id, limit=limit)
     if not prices:
         raise HTTPException(status_code=404, detail="No price snapshots found")
     return prices
 
 
 @app.get("/portfolio", response_model=schemas.PortfolioResponse)
-def get_portfolio(db: Session = Depends(get_session)):
-    return crud.portfolio_summary(db)
+def get_portfolio(
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    return crud.portfolio_summary(db, current_user.id)
 
 
 @app.get("/search", response_model=Any)

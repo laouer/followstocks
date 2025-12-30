@@ -36,10 +36,58 @@ export interface PortfolioResponse {
   holdings: HoldingStats[];
 }
 
+export interface AuthUser {
+  id: number;
+  email: string;
+  name?: string | null;
+  created_at: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
+const AUTH_TOKEN_KEY = "followstocks_token";
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE || "http://localhost:8000",
   timeout: 5000,
 });
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export function storeAuthToken(token: string) {
+  localStorage.setItem(AUTH_TOKEN_KEY, token);
+}
+
+export function clearAuthToken() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+export function getStoredAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+export async function registerUser(payload: { email: string; password: string; name?: string }) {
+  return api.post<AuthResponse>("/auth/register", payload);
+}
+
+export async function loginUser(payload: { email: string; password: string }) {
+  return api.post<AuthResponse>("/auth/login", payload);
+}
+
+export async function fetchCurrentUser() {
+  return api.get<AuthUser>("/auth/me");
+}
 
 export async function fetchPortfolio() {
   return api.get<PortfolioResponse>("/portfolio");
@@ -71,12 +119,12 @@ export async function fetchEuronextQuote(isin: string, mic: string) {
   return api.get<EuronextQuote>("/quotes/euronext", { params: { isin, mic } });
 }
 
-export async function addPriceSnapshot(payload: { symbol: string; price: number; recorded_at?: string }) {
+export async function addPriceSnapshot(payload: { holding_id: number; price: number; recorded_at?: string }) {
   return api.post("/prices", payload);
 }
 
-export async function fetchPrices(symbol: string, limit = 12) {
-  return api.get(`/prices/${symbol}`, { params: { limit } });
+export async function fetchPrices(holdingId: number, limit = 12) {
+  return api.get(`/prices/${holdingId}`, { params: { limit } });
 }
 
 export async function updateHolding(

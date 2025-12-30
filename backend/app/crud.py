@@ -6,16 +6,45 @@ from sqlalchemy.orm import Session
 from . import models, schemas
 
 
-def get_holding(db: Session, holding_id: int) -> Optional[models.Holding]:
-    return db.query(models.Holding).filter(models.Holding.id == holding_id).first()
+def get_user(db: Session, user_id: int) -> Optional[models.User]:
+    return db.query(models.User).filter(models.User.id == user_id).first()
 
 
-def get_holding_by_symbol(db: Session, symbol: str) -> Optional[models.Holding]:
-    return db.query(models.Holding).filter(models.Holding.symbol == symbol.upper()).first()
+def get_user_by_email(db: Session, email: str) -> Optional[models.User]:
+    return db.query(models.User).filter(models.User.email == email.lower()).first()
 
 
-def create_holding(db: Session, data: schemas.HoldingCreate) -> models.Holding:
+def create_user(db: Session, data: schemas.UserCreate, hashed_password: str) -> models.User:
+    user = models.User(
+        email=data.email.lower(),
+        name=data.name,
+        hashed_password=hashed_password,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def get_holding(db: Session, user_id: int, holding_id: int) -> Optional[models.Holding]:
+    return (
+        db.query(models.Holding)
+        .filter(models.Holding.id == holding_id, models.Holding.user_id == user_id)
+        .first()
+    )
+
+
+def get_holding_by_symbol(db: Session, user_id: int, symbol: str) -> Optional[models.Holding]:
+    return (
+        db.query(models.Holding)
+        .filter(models.Holding.symbol == symbol.upper(), models.Holding.user_id == user_id)
+        .first()
+    )
+
+
+def create_holding(db: Session, user_id: int, data: schemas.HoldingCreate) -> models.Holding:
     holding = models.Holding(
+        user_id=user_id,
         symbol=data.symbol.upper(),
         shares=data.shares,
         cost_basis=data.cost_basis,
@@ -55,8 +84,8 @@ def update_holding(db: Session, holding: models.Holding, data: schemas.HoldingUp
     return holding
 
 
-def delete_holding(db: Session, holding_id: int) -> bool:
-    holding = get_holding(db, holding_id)
+def delete_holding(db: Session, user_id: int, holding_id: int) -> bool:
+    holding = get_holding(db, user_id, holding_id)
     if not holding:
         return False
     db.delete(holding)
@@ -147,13 +176,20 @@ def build_holding_stats(db: Session, holding: models.Holding) -> schemas.Holding
     )
 
 
-def get_holdings_with_stats(db: Session) -> List[schemas.HoldingStats]:
-    holdings = db.query(models.Holding).order_by(models.Holding.symbol.asc()).all()
+def get_holdings_with_stats(db: Session, user_id: int) -> List[schemas.HoldingStats]:
+    holdings = (
+        db.query(models.Holding)
+        .filter(models.Holding.user_id == user_id)
+        .order_by(models.Holding.symbol.asc())
+        .all()
+    )
     return [build_holding_stats(db, holding) for holding in holdings]
 
 
-def get_snapshots_for_symbol(db: Session, symbol: str, limit: int = 24) -> List[models.PriceSnapshot]:
-    holding = get_holding_by_symbol(db, symbol)
+def get_snapshots_for_holding(
+    db: Session, user_id: int, holding_id: int, limit: int = 24
+) -> List[models.PriceSnapshot]:
+    holding = get_holding(db, user_id, holding_id)
     if not holding:
         return []
     return (
@@ -165,8 +201,8 @@ def get_snapshots_for_symbol(db: Session, symbol: str, limit: int = 24) -> List[
     )
 
 
-def portfolio_summary(db: Session) -> schemas.PortfolioResponse:
-    holdings = get_holdings_with_stats(db)
+def portfolio_summary(db: Session, user_id: int) -> schemas.PortfolioResponse:
+    holdings = get_holdings_with_stats(db, user_id)
 
     total_cost = sum(h.shares * h.cost_basis for h in holdings)
     market_values = [h.market_value for h in holdings if h.market_value is not None]

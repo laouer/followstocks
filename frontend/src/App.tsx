@@ -4,6 +4,13 @@ import HighchartsReact from "highcharts-react-official";
 import {
   PortfolioResponse,
   HoldingStats,
+  AuthUser,
+  loginUser,
+  registerUser,
+  fetchCurrentUser,
+  storeAuthToken,
+  clearAuthToken,
+  getStoredAuthToken,
   fetchPortfolio,
   createHolding,
   updateHolding,
@@ -32,6 +39,7 @@ type SearchItem = {
 };
 
 type SortField = "instrument" | "acquired_at" | "shares" | "cost" | "last_price" | "value" | "pl";
+type AuthMode = "login" | "register";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const ALLOCATION_COLORS = [
@@ -96,6 +104,16 @@ const formatDateTime = (value?: string | null) => {
   return new Date(value).toLocaleString();
 };
 
+const formatDateTimeLocal = (value = new Date()) => {
+  const pad = (num: number) => String(num).padStart(2, "0");
+  const year = value.getFullYear();
+  const month = pad(value.getMonth() + 1);
+  const day = pad(value.getDate());
+  const hours = pad(value.getHours());
+  const minutes = pad(value.getMinutes());
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
 const formatDate = (value?: string | null) => {
   if (!value) return "—";
   return new Date(value).toLocaleDateString();
@@ -105,6 +123,11 @@ function App() {
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [authToken, setAuthToken] = useState<string | null>(() => getStoredAuthToken());
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [authStatus, setAuthStatus] = useState<Status>({ kind: "idle" });
   const [holdingForm, setHoldingForm] = useState({
     symbol: "",
     shares: "",
@@ -117,7 +140,7 @@ function App() {
     acquired_at: "",
     manualPriceEnabled: false,
     manualLastPrice: "",
-    manualLastPriceAt: "",
+    manualLastPriceAt: formatDateTimeLocal(),
   });
   const [shareEditForm, setShareEditForm] = useState({
     holdingId: "",
@@ -138,10 +161,12 @@ function App() {
   const [fxRates, setFxRates] = useState<Record<string, number>>({});
   const DISPLAY_CURRENCY = "EUR";
   const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | null>(null);
+  const [plChartType, setPlChartType] = useState<"donut" | "bar">("donut");
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
   const summary = portfolio?.summary;
   const totalCurrency = DISPLAY_CURRENCY;
+  const isAuthed = Boolean(authToken);
 
   const convertAmount = (value: number | null | undefined, currency: string) => {
     if (value === null || value === undefined) return null;
@@ -378,7 +403,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     };
   }, [allocationData, totalCurrency]);
 
-  const plOptions = useMemo<Highcharts.Options>(() => {
+  const plDonutOptions = useMemo<Highcharts.Options>(() => {
     const hasData = plData.total > 0 && plData.points.length > 0;
     const data = hasData
       ? plData.points.map((p, idx) => ({
@@ -486,6 +511,122 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     };
   }, [plData, totalCurrency]);
 
+  const plBarOptions = useMemo<Highcharts.Options>(() => {
+    const hasData = plData.total > 0 && plData.points.length > 0;
+    const data = hasData
+      ? plData.points.map((p, idx) => ({
+          name: p.name || p.label,
+          y: Number(p.gain.toFixed(2)),
+          color: p.isLoss
+            ? LOSS_COLOR
+            : ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+          currency: DISPLAY_CURRENCY,
+          displayName: p.label,
+          rawGain: p.gain,
+          share: plData.total > 0 ? Math.abs(p.gain) / plData.total : 0,
+        }))
+      : [];
+
+    return {
+      chart: {
+        type: "bar",
+        backgroundColor: "transparent",
+        height: 300,
+      },
+      title: { text: null },
+      xAxis: {
+        categories: data.map((point) => point.name || ""),
+        lineColor: "rgba(255, 255, 255, 0.15)",
+        tickColor: "rgba(255, 255, 255, 0.15)",
+        labels: {
+          style: { color: "#e9ecf4", fontWeight: "600", fontSize: "11px" },
+        },
+      },
+      yAxis: {
+        title: { text: null },
+        gridLineColor: "rgba(255, 255, 255, 0.08)",
+        labels: {
+          style: { color: "#9fb0d4", fontSize: "11px" },
+          formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+            return formatMoneySigned(this.value as number, totalCurrency);
+          },
+        },
+        plotLines: [
+          {
+            value: 0,
+            color: "rgba(255, 255, 255, 0.28)",
+            width: 1,
+          },
+        ],
+      },
+      tooltip: {
+        useHTML: true,
+        backgroundColor: "rgba(12, 18, 36, 0.95)",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        style: { color: "#e9ecf4" },
+        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
+          const point = this.point as Highcharts.Point;
+          const options = point.options as Highcharts.PointOptionsObject & {
+            currency?: string;
+            displayName?: string;
+            rawGain?: number;
+            share?: number;
+          };
+          const currency = options.currency || totalCurrency;
+          const rawGain = options.rawGain ?? (point.y as number) ?? 0;
+          const value = formatMoneySigned(rawGain, currency);
+          const share =
+            options.share !== undefined
+              ? `${(options.share * 100).toFixed(1)}% of total P/L`
+              : null;
+          return `<strong>${options.displayName || point.name}</strong><br/>${value}${
+            share ? `<br/>${share}` : ""
+          }`;
+        },
+      },
+      plotOptions: {
+        bar: {
+          borderWidth: 0,
+          dataLabels: {
+            enabled: hasData,
+            style: {
+              color: "#e9ecf4",
+              textOutline: "none",
+              fontWeight: "600",
+              fontSize: "11px",
+            },
+            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
+              const point = this.point as Highcharts.Point;
+              const options = point.options as Highcharts.PointOptionsObject & {
+                currency?: string;
+                rawGain?: number;
+              };
+              const currency = options.currency || totalCurrency;
+              const rawGain = options.rawGain ?? (point.y as number) ?? 0;
+              return formatMoneySigned(rawGain, currency);
+            },
+          },
+        },
+        series: {
+          groupPadding: 0.1,
+          pointPadding: 0.08,
+        },
+      },
+      legend: { enabled: false },
+      credits: { enabled: false },
+      series: [
+        {
+          type: "bar",
+          name: "P/L mix",
+          data,
+        },
+      ],
+    };
+  }, [plData, totalCurrency]);
+
+  const plChartOptions = plChartType === "donut" ? plDonutOptions : plBarOptions;
+  const plToggleLabel = plChartType === "donut" ? "Show bar chart" : "Show donut chart";
+
   const sortedHoldings = useMemo(() => {
     const list = [...holdings];
     const getValue = (h: HoldingStats) => {
@@ -551,6 +692,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   };
 
   const loadPortfolio = async () => {
+    const token = authToken || getStoredAuthToken();
+    if (!token) {
+      setPortfolio(null);
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetchPortfolio();
       setPortfolio(res.data);
@@ -579,10 +726,74 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       }
       setStatus({ kind: "idle" });
     } catch (err) {
+      const statusCode = (err as { response?: { status?: number } })?.response?.status;
+      if (statusCode === 401) {
+        clearAuthToken();
+        setAuthToken(null);
+        setCurrentUser(null);
+        setPortfolio(null);
+        setAuthStatus({ kind: "error", message: "Session expired. Please sign in again." });
+        setStatus({ kind: "idle" });
+        return;
+      }
       setStatus({ kind: "error", message: "Unable to reach the API" });
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = authForm.email.trim();
+    const password = authForm.password.trim();
+    const name = authForm.name.trim();
+    if (!email || !password) {
+      setAuthStatus({ kind: "error", message: "Email and password are required." });
+      return;
+    }
+    setAuthStatus({
+      kind: "loading",
+      message: authMode === "login" ? "Signing in..." : "Creating account...",
+    });
+    try {
+      const res =
+        authMode === "login"
+          ? await loginUser({ email, password })
+          : await registerUser({ email, password, name: name || undefined });
+      const token = res.data.access_token;
+      storeAuthToken(token);
+      setAuthToken(token);
+      setCurrentUser(res.data.user);
+      setAuthStatus({
+        kind: "success",
+        message: authMode === "login" ? "Signed in." : "Account created.",
+      });
+      setAuthForm({ name: "", email: "", password: "" });
+      setLoading(true);
+      await loadPortfolio();
+    } catch (err) {
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Authentication failed.";
+      setAuthStatus({ kind: "error", message });
+    }
+  };
+
+  const handleLogout = () => {
+    clearAuthToken();
+    setAuthToken(null);
+    setCurrentUser(null);
+    setPortfolio(null);
+    setLoading(false);
+    setStatus({ kind: "idle" });
+    setAuthStatus({ kind: "idle" });
+    setAuthForm({ name: "", email: "", password: "" });
+    setShowAddHoldingModal(false);
+    setShowSymbolModal(false);
+    setEditingHoldingId(null);
+    setSymbolSearchTerm("");
+    setSymbolResults([]);
+    setSymbolSearchStatus({ kind: "idle" });
   };
 
   useEffect(() => {
@@ -620,11 +831,41 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   }, [holdings, DISPLAY_CURRENCY, fxRates]);
 
   useEffect(() => {
+    if (!authToken) {
+      setCurrentUser(null);
+      return;
+    }
+    let cancelled = false;
+    const loadUser = async () => {
+      try {
+        const res = await fetchCurrentUser();
+        if (!cancelled) {
+          setCurrentUser(res.data);
+        }
+      } catch {
+        if (!cancelled) {
+          setCurrentUser(null);
+        }
+      }
+    };
+    loadUser();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken]);
+
+  useEffect(() => {
+    if (!authToken) {
+      setPortfolio(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     loadPortfolio();
     const interval = setInterval(loadPortfolio, REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
     const term = symbolSearchTerm.trim();
@@ -700,10 +941,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     };
     setStatus({ kind: "loading", message: editingHoldingId ? "Updating holding..." : "Saving holding..." });
     try {
+      let targetHoldingId = editingHoldingId;
       if (editingHoldingId) {
         await updateHolding(editingHoldingId, payload);
       } else {
-        await createHolding(payload);
+        const created = await createHolding(payload);
+        targetHoldingId = created.data?.id ?? null;
       }
       setHoldingForm({
         symbol: "",
@@ -717,18 +960,25 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         acquired_at: "",
         manualPriceEnabled: false,
         manualLastPrice: "",
-        manualLastPriceAt: "",
+        manualLastPriceAt: formatDateTimeLocal(),
       });
       setEditingHoldingId(null);
       await loadPortfolio();
       if (holdingForm.manualPriceEnabled && holdingForm.manualLastPrice) {
         try {
           const recorded_at = holdingForm.manualLastPriceAt || undefined;
-          await addPriceSnapshot({
-            symbol: payload.symbol,
-            price: Number(holdingForm.manualLastPrice),
-            recorded_at,
-          });
+          if (!targetHoldingId) {
+            setStatus({
+              kind: "error",
+              message: "Holding saved but price could not be attached",
+            });
+          } else {
+            await addPriceSnapshot({
+              holding_id: targetHoldingId,
+              price: Number(holdingForm.manualLastPrice),
+              recorded_at,
+            });
+          }
         } catch (err) {
           // non-blocking; just surface a message
           setStatus({
@@ -745,7 +995,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         kind: "error",
         message: editingHoldingId
           ? "Failed to update holding"
-          : "Failed to add holding (symbol must be unique)",
+          : "Failed to add holding",
       });
     }
   };
@@ -783,129 +1033,245 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       setStatus({ kind: "success", message: "Holding removed" });
     } catch (err) {
       setStatus({ kind: "error", message: "Failed to delete holding" });
-  } finally {
-    setDeletingId(null);
-  }
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   return (
     <div className="page">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">Portfolio Pulse</p>
-          <h1>Follow your stocks hourly and stay on top of gains.</h1>
-          <p className="lede">
-            Add your positions, log hourly prices, and watch performance update
-            in real-time.
-          </p>
-        </div>
-        <div className="hero-badge">
-          <span className="dot" />
-          <div>
-            <p>API
-            <strong>
-              {status.kind === "error" ? " Disconnected" : " Connected"}
-            </strong>
-            </p>
-          </div>
-        </div>
-      </header>
 
       <main className="grid">
-        <section className="card summary">
-          <div className="card-header">
-            <div>
-              <p className="eyebrow">Portfolio summary</p>
-            </div>
-            {loading && <span className="pill ghost">Loading…</span>}
-            {!loading && status.kind === "error" && (
-              <span className="pill danger">API issue</span>
-            )}
-          </div>
-          <div className="summary-content">
-            <div className="summary-grid">
-              <div className="stat">
-                <p>Invested</p>
-                <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
+        {!isAuthed ? (
+          <section className="card auth-card">
+            <div className="card-header">
+              <div>
+                {/* <p className="eyebrow">{authMode === "login" ? "Welcome back" : "Get started"}</p> */}
+                <h2>{authMode === "login" ? "Sign in to your portfolio" : "Create your account"}</h2>
+                <p className="muted helper">
+                  {authMode === "login"
+                    ? "Use your email and password to access holdings."
+                    : "Choose an email and password to start tracking."}
+                </p>
               </div>
-              <div className="stat">
-                <p>Value</p>
-                <h3>{displayMoney(enhancedSummary.total_value, totalCurrency)}</h3>
-              </div>
-              <div className="stat">
-                <p>Latent P/L</p>
-                <h3
-                  className={
-                    enhancedSummary.total_gain_abs === null ||
-                    enhancedSummary.total_gain_abs === undefined
-                      ? ""
-                      : enhancedSummary.total_gain_abs >= 0
-                      ? "positive"
-                      : "negative"
-                  }
+              <div className="card-actions">
+                <div className={`hero-badge ${status.kind === "error" ? "is-error" : ""}`}>
+                  <span className="dot" />
+                  <div>
+                    <p>API
+                    <strong>
+                      {status.kind === "error" ? " Disconnected" : " Connected"}
+                    </strong>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="button compact"
+                  onClick={() => {
+                    setAuthMode((prev) => (prev === "login" ? "register" : "login"));
+                    setAuthStatus({ kind: "idle" });
+                  }}
                 >
-                  {displayMoneySigned(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
-                  <span className="muted">
-                    ({formatPercentSigned(enhancedSummary.total_gain_pct)})
-                  </span>
-                </h3>
+                  {authMode === "login" ? "Create account" : "Sign in"}
+                </button>
               </div>
             </div>
-              <div className="summary-charts">
-                <div className="summary-chart">
-                  <div className="summary-chart-header">
-                    <p className="eyebrow">Allocation</p>
-                    <h3>Portfolio mix</h3>
-                    <p className="muted helper">Based on latest prices</p>
-                    <button
-                      type="button"
-                      className="icon-button compact zoom-button"
-                      onClick={() => setZoomedChart("allocation")}
-                      aria-label="Expand allocation chart"
-                    >
-                      🔍
-                    </button>
-                  </div>
-                  <div className="chart-wrapper">
-                    <HighchartsReact
-                      highcharts={Highcharts}
-                      options={allocationOptions}
+            <form className="form" onSubmit={handleAuthSubmit}>
+              {authMode === "register" && (
+                <label>
+                  Name
+                  <input
+                    type="text"
+                    value={authForm.name}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, name: e.target.value }))}
+                    placeholder="Optional"
+                    autoComplete="name"
                   />
+                </label>
+              )}
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={authForm.email}
+                  onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  required
+                />
+              </label>
+              <label>
+                Password
+                <input
+                  type="password"
+                  value={authForm.password}
+                  onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
+                  placeholder="At least 8 characters"
+                  autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                  required
+                />
+              </label>
+              <button
+                className="button primary"
+                type="submit"
+                disabled={authStatus.kind === "loading"}
+              >
+                {authStatus.kind === "loading"
+                  ? authMode === "login"
+                    ? "Signing in..."
+                    : "Creating account..."
+                  : authMode === "login"
+                  ? "Sign in"
+                  : "Create account"}
+              </button>
+            </form>
+            {authStatus.kind === "error" && (
+              <p className="status status-error">{authStatus.message}</p>
+            )}
+          </section>
+        ) : (
+          <>
+            <section className="card summary">
+              <div className="card-header">
+                <div>
+                  <p className="eyebrow">Portfolio summary</p>
                 </div>
-                {(!allocationData.points.length || !allocationData.total) && (
-                  <p className="muted helper">Add holdings to see the breakdown.</p>
-                )}
+                <div className="card-actions">
+                  <span className="pill ghost">{currentUser?.email || "Signed in"}</span>
+                  <div className={`hero-badge ${status.kind === "error" ? "is-error" : ""}`}>
+                    <span className="dot" />
+                    <div>
+                      <p>API
+                      <strong>
+                        {status.kind === "error" ? " Disconnected" : " Connected"}
+                      </strong>
+                      </p>
+                    </div>
+                  </div>
+                  {loading && <span className="pill ghost">Loading…</span>}
+                  {!loading && status.kind === "error" && (
+                    <span className="pill danger">API issue</span>
+                  )}
+                  <button
+                    type="button"
+                    className="button compact"
+                    onClick={handleLogout}
+                  >
+                    Log out
+                  </button>
                 </div>
-
-                <div className="summary-chart">
-                  <div className="summary-chart-header">
-                    <p className="eyebrow">Performance</p>
-                    <h3>P/L mix</h3>
-                    <p className="muted helper">Absolute gains vs losses by holding</p>
-                    <button
-                      type="button"
-                      className="icon-button compact zoom-button"
-                      onClick={() => setZoomedChart("pl")}
-                      aria-label="Expand P/L chart"
-                    >
-                      🔍
-                    </button>
-                  </div>
-                  <div className="chart-wrapper">
-                    <HighchartsReact highcharts={Highcharts} options={plOptions} />
-                  </div>
-                {(!plData.points.length || !plData.total) && (
-                  <p className="muted helper">Add holdings/prices to see the P/L breakdown.</p>
-                )}
               </div>
-            </div>
-          </div>
-          {status.kind !== "idle" && (
-            <p className={`status status-${status.kind}`}>{status.message}</p>
-          )}
-        </section>
+              <div className="summary-content">
+                <div className="summary-grid">
+                  <div className="stat">
+                    <p>Invested</p>
+                    <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
+                  </div>
+                  <div className="stat">
+                    <p>Value</p>
+                    <h3>{displayMoney(enhancedSummary.total_value, totalCurrency)}</h3>
+                  </div>
+                  <div className="stat">
+                    <p>Latent P/L</p>
+                    <h3
+                      className={
+                        enhancedSummary.total_gain_abs === null ||
+                        enhancedSummary.total_gain_abs === undefined
+                          ? ""
+                          : enhancedSummary.total_gain_abs >= 0
+                          ? "positive"
+                          : "negative"
+                      }
+                    >
+                      {displayMoneySigned(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
+                      <span className="muted">
+                        ({formatPercentSigned(enhancedSummary.total_gain_pct)})
+                      </span>
+                    </h3>
+                  </div>
+                </div>
+                  <div className="summary-charts">
+                    <div className="summary-chart">
+                      <div className="summary-chart-header">
+                        <p className="eyebrow">Allocation</p>
+                        <h3>Portfolio mix</h3>
+                        <p className="muted helper">Based on latest prices</p>
+                        <button
+                          type="button"
+                          className="icon-button compact zoom-button"
+                          onClick={() => setZoomedChart("allocation")}
+                          aria-label="Expand allocation chart"
+                        >
+                          🔍
+                        </button>
+                      </div>
+                      <div className="chart-wrapper">
+                        <HighchartsReact
+                          highcharts={Highcharts}
+                          options={allocationOptions}
+                      />
+                    </div>
+                    {(!allocationData.points.length || !allocationData.total) && (
+                      <p className="muted helper">Add holdings to see the breakdown.</p>
+                    )}
+                    </div>
 
-        <section className="card">
+                    <div className="summary-chart">
+                      <div className="summary-chart-header">
+                        <p className="eyebrow">Performance</p>
+                        <h3>P/L mix</h3>
+                        <p className="muted helper">Absolute gains vs losses by holding</p>
+                        <button
+                          type="button"
+                          className="icon-button compact chart-toggle"
+                          onClick={() =>
+                            setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))
+                          }
+                          aria-label={plToggleLabel}
+                          title={plToggleLabel}
+                          aria-pressed={plChartType === "bar"}
+                        >
+                          {plChartType === "donut" ? (
+                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                              <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                              <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                              <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                            </svg>
+                          ) : (
+                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                              <path
+                                d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                                fill="currentColor"
+                                fillRule="evenodd"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button compact zoom-button"
+                          onClick={() => setZoomedChart("pl")}
+                          aria-label="Expand P/L chart"
+                        >
+                          🔍
+                        </button>
+                      </div>
+                      <div className="chart-wrapper">
+                        <HighchartsReact highcharts={Highcharts} options={plChartOptions} />
+                      </div>
+                    {(!plData.points.length || !plData.total) && (
+                      <p className="muted helper">Add holdings/prices to see the P/L breakdown.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {status.kind !== "idle" && (
+                <p className={`status status-${status.kind}`}>{status.message}</p>
+              )}
+            </section>
+
+            <section className="card">
           <div className="card-header">
             <div>
               <p className="eyebrow">Holdings</p>
@@ -927,7 +1293,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     mic: "",
                     name: "",
                     href: "",
-                    acquired_at: ""
+                    acquired_at: "",
+                    manualPriceEnabled: false,
+                    manualLastPrice: "",
+                    manualLastPriceAt: formatDateTimeLocal(),
                   });
                   setShowAddHoldingModal(true);
                 }}
@@ -986,7 +1355,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         : "negative";
                   return (
                     <div className="table-row" key={holding.id}>
-                      <span className="instrument-cell">
+                      <span className="instrument-cell" data-label="Instrument">
                         <div className="instrument-name-row">
                           {instrumentHref ? (
                             <a
@@ -1019,7 +1388,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                                   acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
                                   manualPriceEnabled: false,
                                   manualLastPrice: "",
-                                  manualLastPriceAt: "",
+                                  manualLastPriceAt: formatDateTimeLocal(),
                                 });
                               setEditingHoldingId(holding.id);
                               setShowAddHoldingModal(true);
@@ -1038,24 +1407,26 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                             </button>
                         </div>
                       </span>
-                      <span>{holding.acquired_at ? formatDate(holding.acquired_at) : "—"}</span>
-                      <span>{holding.shares.toFixed(2)}</span>
-                      <span>
+                      <span data-label="Acquisition">
+                        {holding.acquired_at ? formatDate(holding.acquired_at) : "—"}
+                      </span>
+                      <span data-label="Shares">{holding.shares.toFixed(2)}</span>
+                      <span data-label="Cost / Total">
                         {formatMoney(holding.cost_basis, holding.currency)}
                         <small>
                           {formatMoney(totalCost, holding.currency)}
                         </small>
                       </span>
-                      <span>
+                      <span data-label="Last price">
                         {lastPriceDisplay.primary}
                         <small>{formatDateTime(lastTime)}</small>
                         {lastPriceDisplay.secondary && <small>{lastPriceDisplay.secondary}</small>}
                       </span>
-                      <span>
+                      <span data-label="Value">
                         {valueDisplay.primary}
                         {valueDisplay.secondary && <small>{valueDisplay.secondary}</small>}
                       </span>
-                      <span className={gainClass}>
+                      <span className={gainClass} data-label="P/L">
                         {gainDisplay.primary}
                         {gainDisplay.secondary && <small>{gainDisplay.secondary}</small>}
                         <small>{formatPercentSigned(gainPct)}</small>
@@ -1070,6 +1441,8 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             </div>
           )}
         </section>
+          </>
+        )}
       </main>
 
       {showAddHoldingModal && (
@@ -1252,7 +1625,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 {holdingForm.manualPriceEnabled && (
                   <>
                     <label>
-                      Last price
+                      Last price (per share) 
                       <input
                         type="number"
                         step="any"
@@ -1444,9 +1817,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
               <HighchartsReact
                 highcharts={Highcharts}
                 options={{
-                  ...(zoomedChart === "allocation" ? allocationOptions : plOptions),
+                  ...(zoomedChart === "allocation" ? allocationOptions : plChartOptions),
                   chart: {
-                    ...(zoomedChart === "allocation" ? allocationOptions.chart : plOptions.chart),
+                    ...(zoomedChart === "allocation" ? allocationOptions.chart : plChartOptions.chart),
                     height: 520,
                   },
                 }}

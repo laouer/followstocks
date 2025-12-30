@@ -6,11 +6,25 @@ from sqlalchemy.orm import relationship
 from .database import Base
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=True)
+    hashed_password = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    holdings = relationship("Holding", back_populates="user", cascade="all, delete-orphan")
+
+
 class Holding(Base):
     __tablename__ = "holdings"
 
     id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    symbol = Column(String, index=True, nullable=False)
     shares = Column(Float, nullable=False)
     cost_basis = Column(Float, nullable=False)  # per share
     currency = Column(String, default="USD", nullable=False)
@@ -22,12 +36,14 @@ class Holding(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    user = relationship("User", back_populates="holdings")
     snapshots = relationship(
         "PriceSnapshot",
         back_populates="holding",
         cascade="all, delete-orphan",
         order_by="PriceSnapshot.recorded_at.desc()",
     )
+
 
 
 class PriceSnapshot(Base):

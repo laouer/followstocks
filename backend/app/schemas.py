@@ -6,6 +6,61 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 CurrencyCode = Literal["USD", "EUR"]
 
 
+class UserBase(BaseModel):
+    email: str = Field(..., min_length=3, description="Email address")
+    name: Optional[str] = Field(None, description="Display name")
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        if v is None:
+            raise ValueError("Email is required")
+        email = str(v).strip().lower()
+        if not email:
+            raise ValueError("Email is required")
+        return email
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        name = str(v).strip()
+        return name or None
+
+
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=8, description="Account password")
+
+
+class UserPublic(UserBase):
+    id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=8)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_login_email(cls, v: str) -> str:
+        if v is None:
+            raise ValueError("Email is required")
+        email = str(v).strip().lower()
+        if not email:
+            raise ValueError("Email is required")
+        return email
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserPublic
+
+
 class HoldingBase(BaseModel):
     symbol: str = Field(..., description="Ticker symbol", examples=["AAPL"])
     shares: float = Field(..., gt=0, description="Number of shares owned")
@@ -108,7 +163,7 @@ class PriceSnapshotBase(BaseModel):
 
 
 class PriceSnapshotCreate(PriceSnapshotBase):
-    symbol: str = Field(..., description="Ticker symbol for the snapshot")
+    holding_id: int = Field(..., description="Holding id for the snapshot")
 
 
 class PriceSnapshot(PriceSnapshotBase):
