@@ -61,11 +61,66 @@ class TokenResponse(BaseModel):
     user: UserPublic
 
 
+class AccountBase(BaseModel):
+    name: str = Field(..., min_length=1, description="Account name")
+    account_type: Optional[str] = Field(None, description="Account type")
+    liquidity: float = Field(0, ge=0, description="Cash available in the account currency")
+
+    @field_validator("name", "account_type", mode="before")
+    @classmethod
+    def strip_account_text(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
+
+class AccountCreate(AccountBase):
+    pass
+
+
+class AccountUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1)
+    account_type: Optional[str] = Field(None)
+    liquidity: Optional[float] = Field(None, ge=0)
+
+    @field_validator("name", "account_type", mode="before")
+    @classmethod
+    def strip_account_text_optional(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
+
+class Account(AccountBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class HoldingBase(BaseModel):
+    account_id: Optional[int] = Field(
+        None,
+        description="Account id that holds this position",
+    )
     symbol: str = Field(..., description="Ticker symbol", examples=["AAPL"])
     shares: float = Field(..., gt=0, description="Number of shares owned")
     cost_basis: float = Field(..., gt=0, description="Cost per share at purchase")
+    acquisition_fee_value: float = Field(
+        0,
+        ge=0,
+        description="Acquisition fee amount in the holding currency",
+    )
     currency: CurrencyCode = Field("USD", description="Currency code for the holding (USD or EUR)")
+    sector: Optional[str] = Field(None, description="Sector classification")
+    industry: Optional[str] = Field(None, description="Industry classification")
+    asset_type: Optional[str] = Field(
+        None,
+        description="Asset type (e.g. Equity, ETF, Livret A, LDD)",
+    )
     name: Optional[str] = Field(None, description="Instrument name")
     href: Optional[str] = Field(None, description="Euronext instrument link")
     isin: Optional[str] = Field(None, description="ISIN identifier if available")
@@ -80,7 +135,7 @@ class HoldingBase(BaseModel):
             raise ValueError("Currency must be USD or EUR")
         return upper  # type: ignore[return-value]
 
-    @field_validator("name", "href", mode="before")
+    @field_validator("name", "href", "sector", "industry", "asset_type", mode="before")
     @classmethod
     def strip_text(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
@@ -106,10 +161,15 @@ class HoldingCreate(HoldingBase):
 
 
 class HoldingUpdate(BaseModel):
+    account_id: Optional[int] = Field(None, description="Account id")
     symbol: Optional[str] = Field(None, description="Ticker symbol")
     shares: Optional[float] = Field(None, gt=0)
     cost_basis: Optional[float] = Field(None, gt=0)
+    acquisition_fee_value: Optional[float] = Field(None, ge=0)
     currency: Optional[CurrencyCode] = Field(None, description="Currency code (USD or EUR)")
+    sector: Optional[str] = Field(None, description="Sector classification")
+    industry: Optional[str] = Field(None, description="Industry classification")
+    asset_type: Optional[str] = Field(None, description="Asset type")
     isin: Optional[str] = Field(None, description="ISIN identifier")
     mic: Optional[str] = Field(None, description="Market identifier code")
     name: Optional[str] = Field(None, description="Instrument name")
@@ -140,7 +200,7 @@ class HoldingUpdate(BaseModel):
             return None
         return v.strip().upper() or None
 
-    @field_validator("name", "href", mode="before")
+    @field_validator("name", "href", "sector", "industry", "asset_type", mode="before")
     @classmethod
     def strip_text_optional(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
@@ -153,6 +213,7 @@ class Holding(HoldingBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    account: Optional[Account] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -196,3 +257,29 @@ class PortfolioSummary(BaseModel):
 class PortfolioResponse(BaseModel):
     summary: PortfolioSummary
     holdings: List[HoldingStats]
+    accounts: List[Account] = []
+
+
+class HoldingsImportResult(BaseModel):
+    created: int
+    skipped: int
+    errors: List[str]
+
+
+class Cac40Item(BaseModel):
+    symbol: str
+    name: Optional[str] = None
+    currency: Optional[str] = None
+    price: Optional[float] = None
+    target_mean_price: Optional[float] = None
+    trailing_pe: Optional[float] = None
+    price_to_book: Optional[float] = None
+    dividend_yield: Optional[float] = None
+    market_cap: Optional[float] = None
+    score: Optional[float] = None
+
+
+class Cac40AnalysisResponse(BaseModel):
+    metric: str
+    updated_at: datetime
+    items: List[Cac40Item]

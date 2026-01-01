@@ -29,6 +29,7 @@ If you prefer plain venv/pip, `pip install -r requirements.txt` works too. API r
 - `GET /portfolio` portfolio summary + holdings stats.
 - `GET /search?q=` uses Yahoo Finance search for symbol lookup (used for autocomplete).
 - `GET /quotes/yfinance?symbol=` fetches latest price via Yahoo Finance.
+- `GET /analysis/cac40?metric=analyst_discount|pe_discount|dividend_yield` CAC40 undervaluation ranking.
 - Background task (enabled by default) that refreshes prices hourly using Yahoo Finance symbols and stores them as snapshots. Control with `AUTO_REFRESH_ENABLED` (`true`/`false`) and `AUTO_REFRESH_SECONDS` (default `3600`).
 
 Holdings, prices, and portfolio endpoints require `Authorization: Bearer <token>`.

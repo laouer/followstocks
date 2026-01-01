@@ -169,6 +169,29 @@ body {
   gap: 14px;
 }
 
+.summary-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.chart-group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chart-select {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
 .summary-chart {
   background:
     radial-gradient(circle at 12% 14%, rgba(14, 165, 233, 0.08), transparent 42%),
@@ -208,6 +231,21 @@ body {
   top: 12px;
   right: 52px;
   z-index: 5;
+}
+
+.highcharts-drilldown-data-label,
+.highcharts-drilldown-data-label text,
+.highcharts-drilldown-data-label a,
+.highcharts-drilldown-data-label a:visited {
+  color: var(--text)!important;
+  fill: var(--text) !important;
+  text-decoration: none !important;
+}
+
+.highcharts-drilldown-data-label a:hover,
+.highcharts-drilldown-data-label a:focus {
+  color: var(--accent-2);
+  fill: var(--accent-2);
 }
 
 .donut-center {
@@ -275,10 +313,103 @@ body {
   overflow: visible;
 }
 
+.analysis-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.analysis-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.analysis-controls select {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  min-width: 220px;
+}
+
+.analysis-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.analysis-table .table-head,
+.analysis-table .table-row {
+  grid-template-columns: 1.6fr 1fr 1fr 0.8fr 0.8fr 0.8fr 1fr 1fr 1.2fr;
+}
+
+.analysis-name {
+  font-weight: 600;
+}
+
+.analysis-link {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.analysis-link:hover,
+.analysis-link:focus-visible {
+  color: var(--accent-2);
+}
+
+.analysis-symbol {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.analysis-stars {
+  position: relative;
+  display: inline-block;
+  align-self: flex-start;
+  width: max-content;
+  font-size: 14px;
+  letter-spacing: 2px;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.analysis-stars-track {
+  display: block;
+  color: rgba(255, 255, 255, 0.18);
+}
+
+.analysis-stars-fill {
+  display: block;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0%;
+  height: 100%;
+  overflow: hidden;
+  color: var(--accent);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.analysis-rating {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: 1.2fr 1fr repeat(5, 1fr);
+  grid-template-columns: 44px 1.2fr 0.9fr 1fr repeat(5, 1fr);
   padding: 10px 12px;
   align-items: center;
   gap: 6px;
@@ -321,15 +452,60 @@ body {
   border-top: 1px solid var(--border);
 }
 
-.table-row span {
+.table-row > span {
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
+.table-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-row > .table-toggle {
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+}
+
+.table-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .table-row small {
   color: var(--muted);
   font-size: 12px;
+}
+
+.account-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-select select {
+  flex: 1;
+}
+
+.account-select .button {
+  white-space: nowrap;
+}
+
+.account-table .table-head,
+.account-table .table-row {
+  grid-template-columns: 1.4fr 1fr 0.9fr 0.6fr 0.6fr;
+}
+
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-direction: row;
 }
 
 .instrument-cell {
@@ -602,6 +778,16 @@ body {
   align-items: center;
 }
 
+.chart-modal-header {
+  gap: 16px;
+}
+
+.chart-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .symbol-modal h3 {
   margin: 6px 0 0;
 }
@@ -622,6 +808,10 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 10px;
+}
+
+.account-modal-body {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .symbol-modal-body input {
@@ -779,6 +969,20 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .summary-controls {
+    justify-content: flex-start;
+  }
+
+  .chart-modal-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .chart-modal-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
  
   .form-card {
     grid-template-columns: 1fr;
@@ -831,6 +1035,15 @@ body {
   }
 
   .instrument-name-row .muted {
+    display: block;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .analysis-name,
+  .analysis-symbol {
     display: block;
     max-width: 100%;
     white-space: nowrap;

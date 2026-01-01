@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { Link } from "react-router-dom";
 import Highcharts from "highcharts";
+import HighchartsDrilldown from "highcharts/modules/drilldown";
 import HighchartsReact from "highcharts-react-official";
 import {
   PortfolioResponse,
   HoldingStats,
+  Account,
   AuthUser,
   loginUser,
   registerUser,
@@ -12,6 +15,11 @@ import {
   clearAuthToken,
   getStoredAuthToken,
   fetchPortfolio,
+  exportHoldingsCsv,
+  importHoldingsCsv,
+  createAccount,
+  updateAccount,
+  deleteAccount,
   createHolding,
   updateHolding,
   searchInstruments,
@@ -19,6 +27,13 @@ import {
   addPriceSnapshot,
   fetchFxRate,
 } from "./api";
+
+const applyDrilldown =
+  (HighchartsDrilldown as unknown as { default?: (hc: typeof Highcharts) => void })
+    .default || (HighchartsDrilldown as unknown as (hc: typeof Highcharts) => void);
+if (typeof applyDrilldown === "function") {
+  applyDrilldown(Highcharts);
+}
 
 type Status = {
   kind: "idle" | "loading" | "success" | "error";
@@ -38,8 +53,17 @@ type SearchItem = {
   quoteType?: string;
 };
 
-type SortField = "instrument" | "acquired_at" | "shares" | "cost" | "last_price" | "value" | "pl";
+type SortField =
+  | "instrument"
+  | "account"
+  | "acquired_at"
+  | "shares"
+  | "cost"
+  | "last_price"
+  | "value"
+  | "pl";
 type AuthMode = "login" | "register";
+type ChartGroupBy = "holding" | "account" | "asset_type" | "sector" | "industry";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const ALLOCATION_COLORS = [
@@ -63,6 +87,13 @@ const ALLOCATION_COLORS = [
   "#fb7185",
   "#c084fc",
   "#f43f5e",
+];
+const CHART_GROUP_OPTIONS: Array<{ value: ChartGroupBy; label: string }> = [
+  { value: "holding", label: "Holding" },
+  { value: "account", label: "Account" },
+  { value: "asset_type", label: "Type" },
+  { value: "sector", label: "Sector" },
+  { value: "industry", label: "Industry" },
 ];
 const LOSS_COLOR = "#fb7185";
 
@@ -132,7 +163,12 @@ function App() {
     symbol: "",
     shares: "",
     cost_basis: "",
+    acquisition_fee_value: "",
     currency: "EUR",
+    sector: "",
+    industry: "",
+    asset_type: "",
+    account_id: "",
     isin: "",
     mic: "",
     name: "",
@@ -162,8 +198,29 @@ function App() {
   const DISPLAY_CURRENCY = "EUR";
   const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | null>(null);
   const [plChartType, setPlChartType] = useState<"donut" | "bar">("donut");
+  const [chartGroupBy, setChartGroupBy] = useState<ChartGroupBy>("holding");
+  const [excludedHoldings, setExcludedHoldings] = useState<Set<number>>(new Set());
+  const [accountForm, setAccountForm] = useState({
+    name: "",
+    account_type: "",
+    liquidity: "",
+  });
+  const [showAccountModal, setShowAccountModal] = useState(false);
+  const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const includeAllRef = useRef<HTMLInputElement | null>(null);
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
+  const accounts = useMemo<Account[]>(() => portfolio?.accounts ?? [], [portfolio]);
+  const defaultAccountId = useMemo(() => {
+    if (!accounts.length) return null;
+    const main = accounts.find((account) => account.name.toLowerCase() === "main");
+    return main?.id || accounts[0]?.id || null;
+  }, [accounts]);
+  const chartHoldings = useMemo(
+    () => holdings.filter((holding) => !excludedHoldings.has(holding.id)),
+    [holdings, excludedHoldings]
+  );
   const summary = portfolio?.summary;
   const totalCurrency = DISPLAY_CURRENCY;
   const isAuthed = Boolean(authToken);
@@ -187,13 +244,42 @@ function App() {
     return formatMoneySigned(converted, DISPLAY_CURRENCY);
   };
 
-const renderAmount = (value: number | null | undefined, currency: string) => {
-  const converted = convertAmount(value, currency);
-  const isConverted = currency.toUpperCase() !== DISPLAY_CURRENCY && converted !== null && converted !== undefined;
-  const primary = isConverted ? formatMoney(converted, DISPLAY_CURRENCY) : formatMoney(value, currency);
-  const secondary = isConverted ? formatMoney(value, currency) : null;
-  return { primary, secondary };
-};
+  const renderAmount = (value: number | null | undefined, currency: string) => {
+    const converted = convertAmount(value, currency);
+    const isConverted =
+      currency.toUpperCase() !== DISPLAY_CURRENCY && converted !== null && converted !== undefined;
+    const primary = isConverted
+      ? formatMoney(converted, DISPLAY_CURRENCY)
+      : formatMoney(value, currency);
+    const secondary = isConverted ? formatMoney(value, currency) : null;
+    return { primary, secondary };
+  };
+
+  const toggleHoldingForCharts = (holdingId: number) => {
+    setExcludedHoldings((prev) => {
+      const next = new Set(prev);
+      if (next.has(holdingId)) {
+        next.delete(holdingId);
+      } else {
+        next.add(holdingId);
+      }
+      return next;
+    });
+  };
+
+  const setAllHoldingsForCharts = (included: boolean) => {
+    if (!holdings.length) return;
+    if (included) {
+      setExcludedHoldings(new Set());
+      return;
+    }
+    setExcludedHoldings(new Set(holdings.map((holding) => holding.id)));
+  };
+
+  const getHoldingFeeValue = (holding: HoldingStats) =>
+    holding.acquisition_fee_value ?? 0;
+  const getHoldingTotalCost = (holding: HoldingStats) =>
+    holding.shares * holding.cost_basis + getHoldingFeeValue(holding);
 
 const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string | null) => {
   if (gainPct === null || gainPct === undefined) return null;
@@ -207,12 +293,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
 };
 
   const enhancedSummary = useMemo(() => {
-    const total_cost = holdings.reduce(
-      (sum, h) => sum + (convertAmount(h.shares * h.cost_basis, h.currency) || 0),
+    const total_cost = chartHoldings.reduce(
+      (sum, h) => sum + (convertAmount(getHoldingTotalCost(h), h.currency) || 0),
       0
     );
     const marketValues: number[] = [];
-    holdings.forEach((h) => {
+    chartHoldings.forEach((h) => {
       const lastPrice = h.last_price ?? null;
       const mvRaw =
         h.market_value !== null && h.market_value !== undefined
@@ -238,78 +324,319 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       hourly_change_abs: summary?.hourly_change_abs ?? null,
       hourly_change_pct: summary?.hourly_change_pct ?? null,
     };
-  }, [holdings, summary]);
+  }, [chartHoldings, summary]);
 
   const allocationData = useMemo(() => {
-    const points = holdings
-      .map((holding) => {
+    const resolveGroupLabel = (holding: HoldingStats) => {
+      switch (chartGroupBy) {
+        case "account":
+          return holding.account?.name || "Uncategorized";
+        case "asset_type":
+          return holding.asset_type || "Uncategorized";
+        case "sector":
+          return holding.sector || "Uncategorized";
+        case "industry":
+          return holding.industry || "Uncategorized";
+        default:
+          return holding.name || holding.symbol || holding.isin || "Holding";
+      }
+    };
+    const slugify = (value: string) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+
+    if (chartGroupBy === "holding") {
+      const grouped = new Map<
+        string,
+        {
+          symbol: string;
+          label: string;
+          y: number;
+          lots: Array<{ name: string; y: number; displayName: string }>;
+        }
+      >();
+
+      chartHoldings.forEach((holding) => {
         const price = holding.last_price ?? holding.cost_basis ?? 0;
         const nativeValue =
           price !== null && price !== undefined ? price * holding.shares : 0;
         const value = convertAmount(nativeValue, holding.currency) ?? 0;
-        if (!value || Number.isNaN(value) || value <= 0) return null;
-        return {
-          name: holding.symbol,
-          label: holding.name || holding.symbol || holding.isin || "Holding",
+        if (!value || Number.isNaN(value) || value <= 0) return;
+
+        const symbol =
+          (holding.symbol || holding.name || holding.isin || `holding-${holding.id}`)
+            .toString()
+            .toUpperCase();
+        const label = holding.name || holding.symbol || holding.isin || symbol;
+        const key = symbol.toLowerCase();
+        const lotLabel = holding.acquired_at ? holding.acquired_at : `Lot ${holding.id}`;
+        const lotDisplay = `${label} - ${lotLabel} - ${holding.shares.toFixed(2)} sh`;
+        const entry =
+          grouped.get(key) ||
+          ({
+            symbol,
+            label,
+            y: 0,
+            lots: [],
+          } as {
+            symbol: string;
+            label: string;
+            y: number;
+            lots: Array<{ name: string; y: number; displayName: string }>;
+          });
+        entry.y += value;
+        entry.lots.push({
+          name: lotLabel,
           y: Number(value.toFixed(2)),
-          currency: holding.currency || totalCurrency,
-        };
-      })
-      .filter(Boolean) as Array<{
-        name: string;
+          displayName: lotDisplay,
+        });
+        grouped.set(key, entry);
+      });
+
+      const points = Array.from(grouped.values()).map((entry) => ({
+        name: entry.symbol,
+        label: entry.label,
+        y: Number(entry.y.toFixed(2)),
+        currency: totalCurrency,
+        drilldown: entry.lots.length > 1 ? `allocation-${entry.symbol}` : undefined,
+        detailCount: entry.lots.length,
+        detailLabel: entry.lots.length === 1 ? "lot" : "lots",
+      }));
+
+      const drilldownSeries = Array.from(grouped.values())
+        .filter((entry) => entry.lots.length > 1)
+        .map(
+          (entry) =>
+            ({
+              type: "pie",
+              id: `allocation-${entry.symbol}`,
+              name: entry.label,
+              data: entry.lots.map((lot) => ({
+                name: lot.name,
+                y: Number(lot.y.toFixed(2)),
+                currency: totalCurrency,
+                displayName: lot.displayName,
+              })),
+            }) as Highcharts.SeriesOptionsType
+        );
+
+      const total = points.reduce((sum, p) => sum + p.y, 0);
+      return { points, total, drilldownSeries };
+    }
+
+    const grouped = new Map<
+      string,
+      {
         label: string;
         y: number;
-        currency: string;
-      }>;
+        holdings: Map<string, { name: string; y: number; displayName: string }>;
+      }
+    >();
+    chartHoldings.forEach((holding) => {
+      const price = holding.last_price ?? holding.cost_basis ?? 0;
+      const nativeValue =
+        price !== null && price !== undefined ? price * holding.shares : 0;
+      const value = convertAmount(nativeValue, holding.currency) ?? 0;
+      if (!value || Number.isNaN(value) || value <= 0) return;
+      const label = resolveGroupLabel(holding) || "Uncategorized";
+      const key = label.toLowerCase();
+      const entry =
+        grouped.get(key) ||
+        ({
+          label,
+          y: 0,
+          holdings: new Map<string, { name: string; y: number; displayName: string }>(),
+        } as {
+          label: string;
+          y: number;
+          holdings: Map<string, { name: string; y: number; displayName: string }>;
+        });
+      entry.y += value;
+      const symbol =
+        (holding.symbol || holding.name || holding.isin || `holding-${holding.id}`)
+          .toString()
+          .toUpperCase();
+      const holdingLabel = holding.name || holding.symbol || holding.isin || symbol;
+      const holdingKey = symbol.toLowerCase();
+      const holdingEntry =
+        entry.holdings.get(holdingKey) ||
+        ({
+          name: symbol,
+          y: 0,
+          displayName: holdingLabel,
+        } as { name: string; y: number; displayName: string });
+      holdingEntry.y += value;
+      entry.holdings.set(holdingKey, holdingEntry);
+      grouped.set(key, entry);
+    });
+
+    const points = Array.from(grouped.values()).map((entry) => {
+      const holdingCount = entry.holdings.size;
+      return {
+        name: entry.label,
+        label: entry.label,
+        y: Number(entry.y.toFixed(2)),
+        currency: totalCurrency,
+        drilldown: holdingCount >= 1 ? `allocation-group-${slugify(entry.label)}` : undefined,
+        detailCount: holdingCount,
+        detailLabel: holdingCount === 1 ? "holding" : "holdings",
+      };
+    });
+    const drilldownSeries = Array.from(grouped.values()).map(
+      (entry) =>
+        ({
+          type: "pie",
+          id: `allocation-group-${slugify(entry.label)}`,
+          name: entry.label,
+          data: Array.from(entry.holdings.values()).map((item) => ({
+            name: item.name,
+            y: Number(item.y.toFixed(2)),
+            currency: totalCurrency,
+            displayName: item.displayName,
+          })),
+        }) as Highcharts.SeriesOptionsType
+    );
     const total = points.reduce((sum, p) => sum + p.y, 0);
-    return { points, total };
-  }, [holdings, totalCurrency]);
+    return { points, total, drilldownSeries };
+  }, [chartGroupBy, chartHoldings, totalCurrency]);
 
   const plData = useMemo(() => {
-    const points = holdings
-      .map((holding) => {
-        const price = holding.last_price ?? null;
-        const marketValueNative =
-          price !== null && price !== undefined ? price * holding.shares : holding.market_value;
-        const marketValue = convertAmount(marketValueNative, holding.currency);
-        const totalCost = holding.shares * holding.cost_basis;
-        const gainAbs =
-          marketValue !== null && marketValue !== undefined
-            ? marketValue - (convertAmount(totalCost, holding.currency) || 0)
-            : convertAmount(holding.gain_abs, holding.currency);
-        if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return null;
-        const amount = Math.abs(gainAbs);
+    const resolveGroupLabel = (holding: HoldingStats) => {
+      switch (chartGroupBy) {
+        case "account":
+          return holding.account?.name || "Uncategorized";
+        case "asset_type":
+          return holding.asset_type || "Uncategorized";
+        case "sector":
+          return holding.sector || "Uncategorized";
+        case "industry":
+          return holding.industry || "Uncategorized";
+        default:
+          return holding.name || holding.symbol || holding.isin || "Holding";
+      }
+    };
+
+    if (chartGroupBy === "holding") {
+      const points = chartHoldings
+        .map((holding) => {
+          const price = holding.last_price ?? null;
+          const marketValueNative =
+            price !== null && price !== undefined
+              ? price * holding.shares
+              : holding.market_value;
+          const marketValue = convertAmount(marketValueNative, holding.currency);
+          const totalCost = getHoldingTotalCost(holding);
+          const gainAbs =
+            marketValue !== null && marketValue !== undefined
+              ? marketValue - (convertAmount(totalCost, holding.currency) || 0)
+              : convertAmount(holding.gain_abs, holding.currency);
+          if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return null;
+          const amount = Math.abs(gainAbs);
+          if (!amount || Number.isNaN(amount)) return null;
+          return {
+            name: holding.symbol,
+            label: holding.name || holding.symbol || holding.isin || "Holding",
+            gain: Number(gainAbs.toFixed(2)),
+            y: Number(amount.toFixed(2)),
+            currency: totalCurrency,
+            isLoss: gainAbs < 0,
+          };
+        })
+        .filter(Boolean) as Array<{
+          name: string;
+          label: string;
+          gain: number;
+          y: number;
+          currency: string;
+          isLoss: boolean;
+        }>;
+      const total = points.reduce((sum, p) => sum + p.y, 0);
+      return { points, total };
+    }
+
+    const grouped = new Map<string, { label: string; gain: number }>();
+    chartHoldings.forEach((holding) => {
+      const price = holding.last_price ?? null;
+      const marketValueNative =
+        price !== null && price !== undefined ? price * holding.shares : holding.market_value;
+      const marketValue = convertAmount(marketValueNative, holding.currency);
+      const totalCost = getHoldingTotalCost(holding);
+      const gainAbs =
+        marketValue !== null && marketValue !== undefined
+          ? marketValue - (convertAmount(totalCost, holding.currency) || 0)
+          : convertAmount(holding.gain_abs, holding.currency);
+      if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return;
+      if (Number.isNaN(gainAbs)) return;
+      const label = resolveGroupLabel(holding) || "Uncategorized";
+      const key = label.toLowerCase();
+      const entry = grouped.get(key) || { label, gain: 0 };
+      entry.gain += gainAbs;
+      grouped.set(key, entry);
+    });
+
+    const points = Array.from(grouped.values())
+      .map((entry) => {
+        const amount = Math.abs(entry.gain);
         if (!amount || Number.isNaN(amount)) return null;
         return {
-          name: holding.symbol,
-          label: holding.name || holding.symbol || holding.isin || "Holding",
-          gain: Number(gainAbs.toFixed(2)),
+          name: entry.label,
+          label: entry.label,
+          gain: Number(entry.gain.toFixed(2)),
           y: Number(amount.toFixed(2)),
-          currency: holding.currency || totalCurrency,
-          isLoss: gainAbs < 0,
+          currency: totalCurrency,
+          isLoss: entry.gain < 0,
         };
       })
       .filter(Boolean) as Array<{
-        name: string;
-        label: string;
-        gain: number;
-        y: number;
-        currency: string;
-        isLoss: boolean;
-      }>;
+      name: string;
+      label: string;
+      gain: number;
+      y: number;
+      currency: string;
+      isLoss: boolean;
+    }>;
     const total = points.reduce((sum, p) => sum + p.y, 0);
     return { points, total };
-  }, [holdings, totalCurrency]);
+  }, [chartGroupBy, chartHoldings, totalCurrency]);
+
+  const chartGainAbs = useMemo(() => {
+    let total = 0;
+    let hasValue = false;
+    chartHoldings.forEach((holding) => {
+      const price = holding.last_price ?? null;
+      const marketValueNative =
+        price !== null && price !== undefined ? price * holding.shares : holding.market_value;
+      const marketValue = convertAmount(marketValueNative, holding.currency);
+      const totalCost = getHoldingTotalCost(holding);
+      const gainAbs =
+        marketValue !== null && marketValue !== undefined
+          ? marketValue - (convertAmount(totalCost, holding.currency) || 0)
+          : convertAmount(holding.gain_abs, holding.currency);
+      if (gainAbs === null || gainAbs === undefined || Number.isNaN(gainAbs)) return;
+      total += gainAbs;
+      hasValue = true;
+    });
+    return hasValue ? total : null;
+  }, [chartHoldings]);
 
   const allocationOptions = useMemo<Highcharts.Options>(() => {
     const hasData = allocationData.total > 0 && allocationData.points.length > 0;
+    const buildAllocationTitle = (value: number) =>
+      `<div class="donut-center"><strong>${formatMoney(Math.ceil(value), totalCurrency)}</strong></div>`;
+    const totalTitle = buildAllocationTitle(allocationData.total);
     const data = hasData
       ? allocationData.points.map((p, idx) => ({
           name: p.name,
           y: Math.ceil(p.y),
+          rawValue: p.y,
           color: ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
           currency: DISPLAY_CURRENCY,
           displayName: p.label,
+          drilldown: p.drilldown,
+          detailCount: p.detailCount,
+          detailLabel: p.detailLabel,
         }))
       : [
           {
@@ -325,13 +652,44 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         type: "pie",
         backgroundColor: "transparent",
         height: 300,
+        events: {
+          drilldown: function (
+            this: Highcharts.Chart,
+            e: Highcharts.DrilldownEventObject
+          ) {
+            if (!e.point) return;
+            const options = e.point.options as Highcharts.PointOptionsObject & {
+              rawValue?: number;
+            };
+            const value =
+              typeof options.rawValue === "number"
+                ? options.rawValue
+                : (e.point.y as number) ?? 0;
+            this.setTitle({ text: buildAllocationTitle(value) });
+          },
+          drillup: function (this: Highcharts.Chart) {
+            this.setTitle({ text: totalTitle });
+          },
+        },
+      },
+      drilldown: {
+        series: allocationData.drilldownSeries,
+        drillUpButton: {
+          theme: {
+            fill: "rgba(15, 23, 42, 0.85)",
+            stroke: "rgba(255, 255, 255, 0.12)",
+            r: 8,
+            style: { color: "#e9ecf4" },
+          },
+        },
       },
       title: {
         useHTML: true,
         align: "center",
         verticalAlign: "middle",
         floating: true,
-        text: `<div class="donut-center"><strong>${formatMoney(Math.ceil(allocationData.total), totalCurrency)}</strong></div>`,
+        style: { color: "#e9ecf4" },
+        text: totalTitle,
       },
       tooltip: {
         useHTML: true,
@@ -343,11 +701,15 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             currency?: string;
             displayName?: string;
             isDummy?: boolean;
+            detailCount?: number;
+            detailLabel?: string;
           };
           const options = point.options as Highcharts.PointOptionsObject & {
             currency?: string;
             displayName?: string;
             isDummy?: boolean;
+            detailCount?: number;
+            detailLabel?: string;
           };
           if (options.isDummy) {
             return "Add holdings to see allocation";
@@ -356,7 +718,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           const displayName = options.displayName || point.name;
           const value = formatMoney(point.y ?? 0, currency);
           const percentage = (point.percentage || 0).toFixed(1);
-          return `<strong>${displayName}</strong><br/>${value}<br/>${percentage}% of portfolio`;
+          const detailCount = options.detailCount ?? point.detailCount ?? 0;
+          const detailLabel = options.detailLabel || "items";
+          const detailLine =
+            detailCount > 1 || detailCount === 1
+              ? `<br/>${detailCount} ${detailLabel}`
+              : "";
+          return `<strong>${displayName}</strong><br/>${value}<br/>${percentage}% of portfolio${detailLine}`;
         },
       },
       plotOptions: {
@@ -437,7 +805,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         align: "center",
         verticalAlign: "middle",
         floating: true,
-        text: `<div class="donut-center"><strong>${formatMoneySigned(enhancedSummary.total_gain_abs, totalCurrency)}</strong></div>`,
+        text: `<div class="donut-center"><strong>${formatMoneySigned(chartGainAbs, totalCurrency)}</strong></div>`,
       },
       tooltip: {
         useHTML: true,
@@ -509,7 +877,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         },
       ],
     };
-  }, [plData, totalCurrency]);
+  }, [plData, totalCurrency, chartGainAbs]);
 
   const plBarOptions = useMemo<Highcharts.Options>(() => {
     const hasData = plData.total > 0 && plData.points.length > 0;
@@ -626,6 +994,24 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
 
   const plChartOptions = plChartType === "donut" ? plDonutOptions : plBarOptions;
   const plToggleLabel = plChartType === "donut" ? "Show bar chart" : "Show donut chart";
+  const chartGroupLabel =
+    CHART_GROUP_OPTIONS.find((option) => option.value === chartGroupBy)?.label || "Holding";
+  const hasHoldings = holdings.length > 0;
+  const allHoldingsIncluded = holdings.length > 0 && excludedHoldings.size === 0;
+  const allocationEmptyMessage = hasHoldings
+    ? "Select holdings to see the breakdown."
+    : "Add holdings to see the breakdown.";
+  const plEmptyMessage = hasHoldings
+    ? "Select holdings/prices to see the P/L breakdown."
+    : "Add holdings/prices to see the P/L breakdown.";
+  const accountHoldingsCount = useMemo(() => {
+    const counts = new Map<number, number>();
+    holdings.forEach((holding) => {
+      if (!holding.account_id) return;
+      counts.set(holding.account_id, (counts.get(holding.account_id) || 0) + 1);
+    });
+    return counts;
+  }, [holdings]);
 
   const sortedHoldings = useMemo(() => {
     const list = [...holdings];
@@ -633,12 +1019,14 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       switch (sortField) {
         case "instrument":
           return (h.name || h.symbol || h.isin || "").toString().toLowerCase();
+        case "account":
+          return (h.account?.name || "").toString().toLowerCase();
         case "acquired_at":
           return h.acquired_at ? new Date(h.acquired_at).getTime() : null;
         case "shares":
           return h.shares;
         case "cost":
-          return convertAmount(h.shares * h.cost_basis, h.currency);
+          return convertAmount(getHoldingTotalCost(h), h.currency);
         case "last_price":
           return convertAmount(h.last_price, h.currency);
         case "value": {
@@ -651,7 +1039,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           const mv =
             h.market_value ??
             (h.last_price !== null && h.last_price !== undefined ? h.last_price * h.shares : null);
-          const totalCost = h.shares * h.cost_basis;
+          const totalCost = getHoldingTotalCost(h);
           const convMv = convertAmount(mv, h.currency);
           const convCost = convertAmount(totalCost, h.currency);
           return convMv !== null && convMv !== undefined && convCost !== null && convCost !== undefined
@@ -797,6 +1185,46 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   };
 
   useEffect(() => {
+    if (!includeAllRef.current) return;
+    const total = holdings.length;
+    includeAllRef.current.indeterminate =
+      excludedHoldings.size > 0 && excludedHoldings.size < total;
+  }, [excludedHoldings.size, holdings.length]);
+
+  useEffect(() => {
+    if (!holdings.length) {
+      if (excludedHoldings.size) {
+        setExcludedHoldings(new Set());
+      }
+      return;
+    }
+    setExcludedHoldings((prev) => {
+      if (!prev.size) return prev;
+      const validIds = new Set(holdings.map((holding) => holding.id));
+      let changed = false;
+      const next = new Set<number>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [holdings, excludedHoldings.size]);
+
+  useEffect(() => {
+    if (!showAddHoldingModal) return;
+    if (!holdingForm.account_id && defaultAccountId) {
+      setHoldingForm((prev) => ({
+        ...prev,
+        account_id: String(defaultAccountId),
+      }));
+    }
+  }, [showAddHoldingModal, defaultAccountId, holdingForm.account_id]);
+
+  useEffect(() => {
     const needed = new Set<string>();
     holdings.forEach((h) => {
       const cur = (h.currency || "").toUpperCase();
@@ -928,11 +1356,20 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       });
       return;
     }
+    const feeValue =
+      holdingForm.acquisition_fee_value === ""
+        ? 0
+        : Number(holdingForm.acquisition_fee_value);
     const payload = {
       symbol: holdingForm.symbol.trim(),
       shares: Number(holdingForm.shares),
       cost_basis: Number(holdingForm.cost_basis),
+      acquisition_fee_value: feeValue,
+      account_id: holdingForm.account_id ? Number(holdingForm.account_id) : undefined,
       currency: holdingForm.currency || "EUR",
+      sector: holdingForm.sector.trim() || undefined,
+      industry: holdingForm.industry.trim() || undefined,
+      asset_type: holdingForm.asset_type.trim() || undefined,
       isin: holdingForm.isin.trim() || undefined,
       mic: holdingForm.mic.trim() || undefined,
       name: holdingForm.name.trim() || undefined,
@@ -952,7 +1389,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         symbol: "",
         shares: "",
         cost_basis: "",
+        acquisition_fee_value: "",
         currency: "EUR",
+        sector: "",
+        industry: "",
+        asset_type: "",
+        account_id: defaultAccountId ? String(defaultAccountId) : "",
         isin: "",
         mic: "",
         name: "",
@@ -1038,6 +1480,142 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     }
   };
 
+  const setHoldingFormFromHolding = (holding: HoldingStats) => {
+    setHoldingForm({
+      symbol: holding.symbol,
+      shares: String(holding.shares),
+      cost_basis: String(holding.cost_basis),
+      acquisition_fee_value:
+        holding.acquisition_fee_value !== null &&
+        holding.acquisition_fee_value !== undefined
+          ? String(holding.acquisition_fee_value)
+          : "",
+      currency: holding.currency,
+      sector: holding.sector || "",
+      industry: holding.industry || "",
+      asset_type: holding.asset_type || "",
+      account_id: holding.account_id ? String(holding.account_id) : "",
+      isin: holding.isin || "",
+      mic: holding.mic || "",
+      name: holding.name || "",
+      href: holding.href || "",
+      acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
+      manualPriceEnabled: false,
+      manualLastPrice: "",
+      manualLastPriceAt: formatDateTimeLocal(),
+    });
+  };
+
+  const handleExportHoldings = async () => {
+    setStatus({ kind: "loading", message: "Preparing CSV export..." });
+    try {
+      const res = await exportHoldingsCsv();
+      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `holdings-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setStatus({ kind: "success", message: "Holdings exported." });
+    } catch (err) {
+      setStatus({ kind: "error", message: "Failed to export holdings" });
+    }
+  };
+
+  const handleImportHoldings = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setStatus({ kind: "loading", message: "Importing holdings..." });
+    try {
+      const res = await importHoldingsCsv(file);
+      await loadPortfolio();
+      const { created, skipped, errors } = res.data;
+      const createdLabel = created === 1 ? "holding" : "holdings";
+      const skippedLabel = skipped === 1 ? "holding" : "holdings";
+      const skippedMessage = skipped ? ` Skipped ${skipped} ${skippedLabel}.` : "";
+      const errorMessage = errors?.length ? ` First error: ${errors[0]}` : "";
+      setStatus({
+        kind: created > 0 ? "success" : "error",
+        message: `Imported ${created} ${createdLabel}.${skippedMessage}${errorMessage}`,
+      });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to import holdings";
+      setStatus({ kind: "error", message: detail });
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const handleAccountSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!accountForm.name.trim()) {
+      setStatus({ kind: "error", message: "Account name is required" });
+      return;
+    }
+    const liquidity =
+      accountForm.liquidity === "" ? 0 : Number(accountForm.liquidity);
+    if (Number.isNaN(liquidity) || liquidity < 0) {
+      setStatus({ kind: "error", message: "Liquidity must be a positive number" });
+      return;
+    }
+    const payload = {
+      name: accountForm.name.trim(),
+      account_type: accountForm.account_type.trim() || undefined,
+      liquidity,
+    };
+    setStatus({
+      kind: "loading",
+      message: editingAccountId ? "Updating account..." : "Creating account...",
+    });
+    try {
+      let createdId: number | null = null;
+      if (editingAccountId) {
+        await updateAccount(editingAccountId, payload);
+      } else {
+        const created = await createAccount(payload);
+        createdId = created.data?.id ?? null;
+      }
+      await loadPortfolio();
+      if (createdId && showAddHoldingModal) {
+        setHoldingForm((prev) => ({
+          ...prev,
+          account_id: String(createdId),
+        }));
+      }
+      setAccountForm({ name: "", account_type: "", liquidity: "" });
+      setEditingAccountId(null);
+      setShowAccountModal(false);
+      setStatus({
+        kind: "success",
+        message: editingAccountId ? "Account updated" : "Account created",
+      });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to save account";
+      setStatus({ kind: "error", message: detail });
+    }
+  };
+
+  const handleDeleteAccount = async (accountId: number) => {
+    setStatus({ kind: "loading", message: "Deleting account..." });
+    try {
+      await deleteAccount(accountId);
+      await loadPortfolio();
+      setStatus({ kind: "success", message: "Account deleted" });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to delete account";
+      setStatus({ kind: "error", message: detail });
+    }
+  };
+
   return (
     <div className="page">
 
@@ -1065,6 +1643,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     </p>
                   </div>
                 </div>
+                <Link className="button compact" to="/analysis/cac40">
+                  CAC40 analysis
+                </Link>
                 <button
                   type="button"
                   className="button compact"
@@ -1149,6 +1730,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       </p>
                     </div>
                   </div>
+                  <Link className="button compact" to="/analysis/cac40">
+                    CAC40 analysis
+                  </Link>
                   {loading && <span className="pill ghost">Loading…</span>}
                   {!loading && status.kind === "error" && (
                     <span className="pill danger">API issue</span>
@@ -1191,12 +1775,30 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     </h3>
                   </div>
                 </div>
+                <div className="summary-controls">
+                  <label className="chart-group-label">
+                    Group by
+                    <select
+                      className="chart-select"
+                      value={chartGroupBy}
+                      onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                    >
+                      {CHART_GROUP_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                   <div className="summary-charts">
                     <div className="summary-chart">
                       <div className="summary-chart-header">
                         <p className="eyebrow">Allocation</p>
                         <h3>Portfolio mix</h3>
-                        <p className="muted helper">Based on latest prices</p>
+                        <p className="muted helper">
+                          Based on latest prices · Grouped by {chartGroupLabel.toLowerCase()}
+                        </p>
                         <button
                           type="button"
                           className="icon-button compact zoom-button"
@@ -1213,7 +1815,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       />
                     </div>
                     {(!allocationData.points.length || !allocationData.total) && (
-                      <p className="muted helper">Add holdings to see the breakdown.</p>
+                      <p className="muted helper">{allocationEmptyMessage}</p>
                     )}
                     </div>
 
@@ -1221,7 +1823,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       <div className="summary-chart-header">
                         <p className="eyebrow">Performance</p>
                         <h3>P/L mix</h3>
-                        <p className="muted helper">Absolute gains vs losses by holding</p>
+                        <p className="muted helper">
+                          Absolute gains vs losses by {chartGroupLabel.toLowerCase()}
+                        </p>
                         <button
                           type="button"
                           className="icon-button compact chart-toggle"
@@ -1261,13 +1865,88 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         <HighchartsReact highcharts={Highcharts} options={plChartOptions} />
                       </div>
                     {(!plData.points.length || !plData.total) && (
-                      <p className="muted helper">Add holdings/prices to see the P/L breakdown.</p>
+                      <p className="muted helper">{plEmptyMessage}</p>
                     )}
                   </div>
                 </div>
               </div>
               {status.kind !== "idle" && (
                 <p className={`status status-${status.kind}`}>{status.message}</p>
+              )}
+            </section>
+
+            <section className="card accounts-card">
+              <div className="card-header">
+                <div>
+                  <p className="eyebrow">Accounts</p>
+                  <h2>Accounts</h2>
+                </div>
+                <div className="card-actions">
+                  <button
+                    type="button"
+                    className="button compact"
+                    onClick={() => {
+                      setAccountForm({ name: "", account_type: "", liquidity: "" });
+                      setEditingAccountId(null);
+                      setShowAccountModal(true);
+                    }}
+                  >
+                    Add account
+                  </button>
+                </div>
+              </div>
+              {accounts.length === 0 ? (
+                <p className="empty">Add an account to organize your holdings.</p>
+              ) : (
+                <div className="table account-table">
+                  <div className="table-head">
+                    <span>Name</span>
+                    <span>Type</span>
+                    <span>Liquidity</span>
+                    <span>Holdings</span>
+                    <span>Actions</span>
+                  </div>
+                  <div className="table-body">
+                    {accounts.map((account) => (
+                      <div className="table-row" key={account.id}>
+                        <span data-label="Name">{account.name}</span>
+                        <span data-label="Type">{account.account_type || "—"}</span>
+                        <span data-label="Liquidity">
+                          {formatMoney(account.liquidity, totalCurrency)}
+                        </span>
+                        <span data-label="Holdings">
+                          {accountHoldingsCount.get(account.id) || 0}
+                        </span>
+                        <span className="account-actions" data-label="Actions">
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label={`Edit ${account.name}`}
+                            onClick={() => {
+                              setAccountForm({
+                                name: account.name,
+                                account_type: account.account_type || "",
+                                liquidity: String(account.liquidity ?? 0),
+                              });
+                              setEditingAccountId(account.id);
+                              setShowAccountModal(true);
+                            }}
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label={`Delete ${account.name}`}
+                            onClick={() => handleDeleteAccount(account.id)}
+                          >
+                            🗑️
+                          </button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </section>
 
@@ -1281,14 +1960,43 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
               <span className="pill ghost">{holdings.length} tracked</span>
               <button
                 type="button"
+                className="button compact"
+                title="Download holdings as CSV"
+                onClick={handleExportHoldings}
+              >
+                Export CSV
+              </button>
+              <button
+                type="button"
+                className="button compact"
+                title="Import holdings from a CSV file"
+                onClick={() => importInputRef.current?.click()}
+              >
+                Import CSV
+              </button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleImportHoldings}
+                hidden
+              />
+              <button
+                type="button"
                 className="button primary compact"
                 onClick={() => {
                   setSymbolSearchTerm("");
                   setEditingHoldingId(null);
-                  setHoldingForm({symbol: "",
+                  setHoldingForm({
+                    symbol: "",
                     shares: "",
                     cost_basis: "",
+                    acquisition_fee_value: "",
                     currency: "EUR",
+                    sector: "",
+                    industry: "",
+                    asset_type: "",
+                    account_id: defaultAccountId ? String(defaultAccountId) : "",
                     isin: "",
                     mic: "",
                     name: "",
@@ -1310,31 +2018,87 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           ) : (
             <div className="table">
               <div className="table-head">
-                <button type="button" className="table-sort" onClick={() => handleSort("instrument")}>
+                <div className="table-toggle">
+                  <input
+                    ref={includeAllRef}
+                    className="table-checkbox"
+                    type="checkbox"
+                    checked={allHoldingsIncluded}
+                    disabled={holdings.length === 0}
+                    onChange={(e) => setAllHoldingsForCharts(e.target.checked)}
+                    aria-label="Include all holdings in charts"
+                    title="Include all holdings in charts"
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Company name and ticker for the position."
+                  onClick={() => handleSort("instrument")}
+                >
                   Instrument {renderSortIcon("instrument")}
                 </button>
-                <button type="button" className="table-sort" onClick={() => handleSort("acquired_at")}>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Account that holds this position."
+                  onClick={() => handleSort("account")}
+                >
+                  Account {renderSortIcon("account")}
+                </button>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Acquisition date for the holding."
+                  onClick={() => handleSort("acquired_at")}
+                >
                   Acquisition {renderSortIcon("acquired_at")}
                 </button>
-                <button type="button" className="table-sort" onClick={() => handleSort("shares")}>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Number of shares held."
+                  onClick={() => handleSort("shares")}
+                >
                   Shares {renderSortIcon("shares")}
                 </button>
-                <button type="button" className="table-sort" onClick={() => handleSort("cost")}>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Cost per share and total cost paid (incl. fee)."
+                  onClick={() => handleSort("cost")}
+                >
                   Cost / Total {renderSortIcon("cost")}
                 </button>
-                <button type="button" className="table-sort" onClick={() => handleSort("last_price")}>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Latest price per share and timestamp."
+                  onClick={() => handleSort("last_price")}
+                >
                   Last price {renderSortIcon("last_price")}
                 </button>
-                <button type="button" className="table-sort" onClick={() => handleSort("value")}>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Current market value of the position."
+                  onClick={() => handleSort("value")}
+                >
                   Value {renderSortIcon("value")}
                 </button>
-                <button type="button" className="table-sort" onClick={() => handleSort("pl")}>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Profit/loss in currency and percent (annualized when available)."
+                  onClick={() => handleSort("pl")}
+                >
                   P/L {renderSortIcon("pl")}
                 </button>
               </div>
               <div className="table-body">
                 {sortedHoldings.map((holding: HoldingStats) => {
-                  const totalCost = holding.shares * holding.cost_basis;
+                  const totalCost = getHoldingTotalCost(holding);
+                  const feeValue = getHoldingFeeValue(holding);
                   const lastPrice = holding.last_price;
                   const lastTime = holding.last_snapshot_at;
                   const marketValue =
@@ -1355,6 +2119,16 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         : "negative";
                   return (
                     <div className="table-row" key={holding.id}>
+                      <span className="table-toggle" data-label="Charts">
+                        <input
+                          className="table-checkbox"
+                          type="checkbox"
+                          checked={!excludedHoldings.has(holding.id)}
+                          onChange={() => toggleHoldingForCharts(holding.id)}
+                          aria-label={`Include ${holding.symbol || holding.name || "holding"} in charts`}
+                          title="Include in charts"
+                        />
+                      </span>
                       <span className="instrument-cell" data-label="Instrument">
                         <div className="instrument-name-row">
                           {instrumentHref ? (
@@ -1376,25 +2150,24 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                               className="icon-button"
                               aria-label={`Edit ${holding.symbol}`}
                               onClick={() => {
-                                setHoldingForm({
-                                  symbol: holding.symbol,
-                                  shares: String(holding.shares),
-                                  cost_basis: String(holding.cost_basis),
-                                  currency: holding.currency,
-                                  isin: holding.isin || "",
-                                  mic: holding.mic || "",
-                                  name: holding.name || "",
-                                  href: holding.href || "",
-                                  acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
-                                  manualPriceEnabled: false,
-                                  manualLastPrice: "",
-                                  manualLastPriceAt: formatDateTimeLocal(),
-                                });
-                              setEditingHoldingId(holding.id);
-                              setShowAddHoldingModal(true);
-                            }}
+                                setHoldingFormFromHolding(holding);
+                                setEditingHoldingId(holding.id);
+                                setShowAddHoldingModal(true);
+                              }}
                             >
                               ✏️
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={`Duplicate ${holding.symbol}`}
+                              onClick={() => {
+                                setHoldingFormFromHolding(holding);
+                                setEditingHoldingId(null);
+                                setShowAddHoldingModal(true);
+                              }}
+                            >
+                              ⧉
                             </button>
                             <button
                               type="button"
@@ -1407,6 +2180,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                             </button>
                         </div>
                       </span>
+                      <span data-label="Account">
+                        {holding.account?.name || "—"}
+                        {holding.account?.account_type && (
+                          <small>{holding.account.account_type}</small>
+                        )}
+                      </span>
                       <span data-label="Acquisition">
                         {holding.acquired_at ? formatDate(holding.acquired_at) : "—"}
                       </span>
@@ -1416,6 +2195,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         <small>
                           {formatMoney(totalCost, holding.currency)}
                         </small>
+                        {feeValue > 0 && (
+                          <small>Fee: {formatMoney(feeValue, holding.currency)}</small>
+                        )}
                       </span>
                       <span data-label="Last price">
                         {lastPriceDisplay.primary}
@@ -1523,6 +2305,93 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     }
                   />
                 </label>
+                <label>
+                  Account
+                  <div className="account-select">
+                    <select
+                      value={holdingForm.account_id}
+                      onChange={(e) =>
+                        setHoldingForm((prev) => ({
+                          ...prev,
+                          account_id: e.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Default account</option>
+                      {accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name}
+                          {account.account_type ? ` · ${account.account_type}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="button compact"
+                      onClick={() => {
+                        setAccountForm({ name: "", account_type: "", liquidity: "" });
+                        setEditingAccountId(null);
+                        setShowAccountModal(true);
+                      }}
+                    >
+                      New
+                    </button>
+                  </div>
+                  <small className="muted">
+                    {accounts.length
+                      ? "Pick the account that holds this position."
+                      : "Create an account to classify this holding."}
+                  </small>
+                </label>
+                <label>
+                  Asset type
+                  <input
+                    list="asset-type-list"
+                    placeholder="Equity, ETF, Livret A, LDD"
+                    value={holdingForm.asset_type}
+                    onChange={(e) =>
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        asset_type: e.target.value,
+                      }))
+                    }
+                  />
+                  <datalist id="asset-type-list">
+                    <option value="Equity" />
+                    <option value="ETF" />
+                    <option value="Mutual Fund" />
+                    <option value="Bond" />
+                    <option value="Livret A" />
+                    <option value="LDD" />
+                    <option value="Cash" />
+                  </datalist>
+                </label>
+                <label>
+                  Sector
+                  <input
+                    placeholder="e.g. Financial Services"
+                    value={holdingForm.sector}
+                    onChange={(e) =>
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        sector: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Industry
+                  <input
+                    placeholder="e.g. Banks - Diversified"
+                    value={holdingForm.industry}
+                    onChange={(e) =>
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        industry: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
                 
                 <label>
                   MIC (optional)
@@ -1590,6 +2459,21 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       setHoldingForm((prev) => ({
                         ...prev,
                         cost_basis: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Acquisition fee (value)
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={holdingForm.acquisition_fee_value}
+                    onChange={(e) =>
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        acquisition_fee_value: e.target.value,
                       }))
                     }
                   />
@@ -1690,6 +2574,108 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         </div>
       )}
 
+      {showAccountModal && (
+        <div
+          className="symbol-modal-backdrop"
+          onClick={() => setShowAccountModal(false)}
+        >
+          <div
+            className="symbol-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">Accounts</p>
+                <h3 id="account-modal-title">
+                  {editingAccountId ? "Edit account" : "Add account"}
+                </h3>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                onClick={() => setShowAccountModal(false)}
+              >
+                ×
+              </button>
+            </div>
+            <form className="form" onSubmit={handleAccountSubmit}>
+              <div className="symbol-modal-body account-modal-body">
+                <label>
+                  Name
+                  <input
+                    required
+                    placeholder="Compte titres"
+                    value={accountForm.name}
+                    onChange={(e) =>
+                      setAccountForm((prev) => ({
+                        ...prev,
+                        name: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Type
+                  <input
+                    list="account-type-list"
+                    placeholder="PEA, Assurance vie"
+                    value={accountForm.account_type}
+                    onChange={(e) =>
+                      setAccountForm((prev) => ({
+                        ...prev,
+                        account_type: e.target.value,
+                      }))
+                    }
+                  />
+                  <datalist id="account-type-list">
+                    <option value="Compte titres" />
+                    <option value="PEA" />
+                    <option value="Assurance vie" />
+                    <option value="PER" />
+                    <option value="Livret A" />
+                    <option value="LDD" />
+                    <option value="Cash" />
+                  </datalist>
+                </label>
+                <label>
+                  Liquidity
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder="0"
+                    value={accountForm.liquidity}
+                    onChange={(e) =>
+                      setAccountForm((prev) => ({
+                        ...prev,
+                        liquidity: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="symbol-modal-footer">
+                <div className="footer-right">
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => setShowAccountModal(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button type="submit" className="button primary">
+                    {editingAccountId ? "Save changes" : "Save account"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {showSymbolModal && (
         <div
           className="symbol-modal-backdrop"
@@ -1753,6 +2739,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                           isin: item.isin || prev.isin,
                           mic: item.mic || prev.mic,
                           name: item.name || prev.name,
+                          sector: item.sector || prev.sector,
+                          industry: item.industry || prev.industry,
+                          asset_type: item.typeDisp || prev.asset_type,
                           href: item.href || yahooHref || prev.href,
                         }));
                           setShowSymbolModal(false);
@@ -1798,20 +2787,36 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             aria-labelledby="zoom-chart-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="symbol-modal-header">
+            <div className="symbol-modal-header chart-modal-header">
               <div>
                 <p className="eyebrow">{zoomedChart === "allocation" ? "Allocation" : "Performance"}</p>
                 <h3 id="zoom-chart-title">
                   {zoomedChart === "allocation" ? "Portfolio mix" : "P/L mix"}
                 </h3>
               </div>
-              <button
-                className="modal-close"
-                type="button"
-                onClick={() => setZoomedChart(null)}
-              >
-                ×
-              </button>
+              <div className="chart-modal-actions">
+                <label className="chart-group-label">
+                  Group by
+                  <select
+                    className="chart-select"
+                    value={chartGroupBy}
+                    onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                  >
+                    {CHART_GROUP_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="modal-close"
+                  type="button"
+                  onClick={() => setZoomedChart(null)}
+                >
+                  ×
+                </button>
+              </div>
             </div>
             <div className="chart-wrapper large">
               <HighchartsReact
