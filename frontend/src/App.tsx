@@ -87,6 +87,36 @@ const ALLOCATION_COLORS = [
   "#fb7185",
   "#c084fc",
   "#f43f5e",
+  "#fda4af",
+  "#fb7185",
+  "#f87171",
+  "#fbbf24",
+  "#f472b6",
+  "#eab308",
+  "#a3e635",
+  "#4ade80",
+  "#34d399",
+  "#2dd4bf",
+  "#5eead4",
+  "#38bdf8",
+  "#60a5fa",
+  "#818cf8",
+  "#a78bfa",
+  "#c4b5fd",
+  "#f0abfc",
+  "#fda4af",
+  "#fb923c",
+  "#fdba74",
+  "#bef264",
+  "#86efac",
+  "#93c5fd",
+  "#c7d2fe",
+  "#f9a8d4",
+  "#fde047",
+  "#7dd3fc",
+  "#67e8f9",
+  "#5eead4",
+  "#facc15",
 ];
 const CHART_GROUP_OPTIONS: Array<{ value: ChartGroupBy; label: string }> = [
   { value: "holding", label: "Holding" },
@@ -197,6 +227,7 @@ function App() {
   const [fxRates, setFxRates] = useState<Record<string, number>>({});
   const DISPLAY_CURRENCY = "EUR";
   const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | null>(null);
+  const [allocationChartType, setAllocationChartType] = useState<"donut" | "bar">("donut");
   const [plChartType, setPlChartType] = useState<"donut" | "bar">("donut");
   const [chartGroupBy, setChartGroupBy] = useState<ChartGroupBy>("holding");
   const [excludedHoldings, setExcludedHoldings] = useState<Set<number>>(new Set());
@@ -536,41 +567,106 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     };
 
     if (chartGroupBy === "holding") {
-      const points = chartHoldings
-        .map((holding) => {
-          const price = holding.last_price ?? null;
-          const marketValueNative =
-            price !== null && price !== undefined
-              ? price * holding.shares
-              : holding.market_value;
-          const marketValue = convertAmount(marketValueNative, holding.currency);
-          const totalCost = getHoldingTotalCost(holding);
-          const gainAbs =
-            marketValue !== null && marketValue !== undefined
-              ? marketValue - (convertAmount(totalCost, holding.currency) || 0)
-              : convertAmount(holding.gain_abs, holding.currency);
-          if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return null;
-          const amount = Math.abs(gainAbs);
+      const grouped = new Map<
+        string,
+        { name: string; label: string; gain: number; lots: Array<{ name: string; label: string; gain: number }> }
+      >();
+      chartHoldings.forEach((holding) => {
+        const price = holding.last_price ?? null;
+        const marketValueNative =
+          price !== null && price !== undefined
+            ? price * holding.shares
+            : holding.market_value;
+        const marketValue = convertAmount(marketValueNative, holding.currency);
+        const totalCost = getHoldingTotalCost(holding);
+        const gainAbs =
+          marketValue !== null && marketValue !== undefined
+            ? marketValue - (convertAmount(totalCost, holding.currency) || 0)
+            : convertAmount(holding.gain_abs, holding.currency);
+        if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return;
+        if (Number.isNaN(gainAbs)) return;
+        const symbol = (holding.symbol || holding.isin || `holding-${holding.id}`)
+          .toString()
+          .toUpperCase();
+        const label = holding.name || holding.symbol || holding.isin || symbol;
+        const key = symbol.toLowerCase();
+        const entry =
+          grouped.get(key) || { name: symbol, label, gain: 0, lots: [] };
+        entry.gain += gainAbs;
+        const lotLabel = holding.acquired_at ? holding.acquired_at : `Lot ${holding.id}`;
+        const lotDisplay = `${label} - ${lotLabel}`;
+        entry.lots.push({ name: lotLabel, label: lotDisplay, gain: gainAbs });
+        grouped.set(key, entry);
+      });
+      const points = Array.from(grouped.values())
+        .map((entry) => {
+          const amount = Math.abs(entry.gain);
           if (!amount || Number.isNaN(amount)) return null;
           return {
-            name: holding.symbol,
-            label: holding.name || holding.symbol || holding.isin || "Holding",
-            gain: Number(gainAbs.toFixed(2)),
+            name: entry.name,
+            label: entry.label,
+            gain: Number(entry.gain.toFixed(2)),
             y: Number(amount.toFixed(2)),
             currency: totalCurrency,
-            isLoss: gainAbs < 0,
+            isLoss: entry.gain < 0,
+            drilldown: entry.lots.length > 1 ? `pl-${entry.name}` : undefined,
+            detailCount: entry.lots.length,
+            detailLabel: entry.lots.length === 1 ? "lot" : "lots",
           };
         })
         .filter(Boolean) as Array<{
-          name: string;
-          label: string;
-          gain: number;
-          y: number;
-          currency: string;
-          isLoss: boolean;
-        }>;
+        name: string;
+        label: string;
+        gain: number;
+        y: number;
+        currency: string;
+        isLoss: boolean;
+        drilldown?: string;
+        detailCount?: number;
+        detailLabel?: string;
+      }>;
+      const drilldownSeriesPie = Array.from(grouped.values())
+        .filter((entry) => entry.lots.length > 1)
+        .map(
+          (entry) =>
+            ({
+              type: "pie",
+              id: `pl-${entry.name}`,
+              name: entry.label,
+              data: entry.lots
+                .map((lot) => ({
+                  name: lot.name,
+                  y: Number(Math.abs(lot.gain).toFixed(2)),
+                  currency: totalCurrency,
+                  displayName: lot.label,
+                  rawGain: lot.gain,
+                  isLoss: lot.gain < 0,
+                }))
+                .filter((lot) => lot.y > 0),
+            }) as Highcharts.SeriesOptionsType
+        );
+      const drilldownSeriesBar = Array.from(grouped.values())
+        .filter((entry) => entry.lots.length > 1)
+        .map(
+          (entry) =>
+            ({
+              type: "bar",
+              id: `pl-${entry.name}`,
+              name: entry.label,
+              data: entry.lots
+                .map((lot, idx) => ({
+                  name: lot.name,
+                  y: Number(lot.gain.toFixed(2)),
+                  color: lot.gain < 0 ? LOSS_COLOR : ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+                  currency: totalCurrency,
+                  displayName: lot.label,
+                  rawGain: lot.gain,
+                }))
+                .filter((lot) => lot.y !== 0),
+            }) as Highcharts.SeriesOptionsType
+        );
       const total = points.reduce((sum, p) => sum + p.y, 0);
-      return { points, total };
+      return { points, total, drilldownSeriesPie, drilldownSeriesBar };
     }
 
     const grouped = new Map<string, { label: string; gain: number }>();
@@ -615,7 +711,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       isLoss: boolean;
     }>;
     const total = points.reduce((sum, p) => sum + p.y, 0);
-    return { points, total };
+    return { points, total, drilldownSeriesPie: [], drilldownSeriesBar: [] };
   }, [chartGroupBy, chartHoldings, totalCurrency]);
 
   const chartGainAbs = useMemo(() => {
@@ -781,6 +877,108 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       series: [
         {
           type: "pie",
+          name: "Portfolio",
+          data,
+        },
+      ],
+    };
+  }, [allocationData, totalCurrency]);
+
+  const allocationBarOptions = useMemo<Highcharts.Options>(() => {
+    const hasData = allocationData.total > 0 && allocationData.points.length > 0;
+    const data = hasData
+      ? allocationData.points.map((point, idx) => ({
+          name: point.name || point.label,
+          y: Number(point.y.toFixed(2)),
+          color: ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+          currency: DISPLAY_CURRENCY,
+          displayName: point.label,
+          share: allocationData.total > 0 ? point.y / allocationData.total : 0,
+          detailCount: point.detailCount,
+          detailLabel: point.detailLabel,
+        }))
+      : [];
+
+    return {
+      chart: {
+        type: "bar",
+        backgroundColor: "transparent",
+        height: 300,
+      },
+      title: { text: null },
+      xAxis: {
+        categories: data.map((point) => point.name || ""),
+        lineColor: "rgba(255, 255, 255, 0.15)",
+        tickColor: "rgba(255, 255, 255, 0.15)",
+        labels: {
+          style: { color: "#e9ecf4", fontWeight: "600", fontSize: "11px" },
+        },
+      },
+      yAxis: {
+        title: { text: null },
+        gridLineColor: "rgba(255, 255, 255, 0.08)",
+        labels: {
+          style: { color: "#9fb0d4", fontSize: "11px" },
+          formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+            return formatMoney(this.value as number, totalCurrency);
+          },
+        },
+      },
+      tooltip: {
+        useHTML: true,
+        backgroundColor: "rgba(12, 18, 36, 0.95)",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        style: { color: "#e9ecf4" },
+        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
+          const point = this.point as Highcharts.Point;
+          const options = point.options as Highcharts.PointOptionsObject & {
+            currency?: string;
+            displayName?: string;
+            share?: number;
+            detailCount?: number;
+            detailLabel?: string;
+          };
+          const currency = options.currency || totalCurrency;
+          const value = formatMoney(point.y as number, currency);
+          const share =
+            options.share !== undefined
+              ? `${(options.share * 100).toFixed(1)}% of portfolio`
+              : null;
+          const detailCount = options.detailCount ?? 0;
+          const detailLabel = options.detailLabel || "items";
+          const detailLine =
+            detailCount > 1 || detailCount === 1 ? `${detailCount} ${detailLabel}` : null;
+          return `<strong>${options.displayName || point.name}</strong><br/>${value}${
+            share ? `<br/>${share}` : ""
+          }${detailLine ? `<br/>${detailLine}` : ""}`;
+        },
+      },
+      plotOptions: {
+        bar: {
+          borderWidth: 0,
+          dataLabels: {
+            enabled: hasData,
+            style: {
+              color: "#e9ecf4",
+              textOutline: "none",
+              fontWeight: "600",
+              fontSize: "11px",
+            },
+            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
+              return formatMoney(this.y as number, totalCurrency);
+            },
+          },
+        },
+        series: {
+          groupPadding: 0.1,
+          pointPadding: 0.08,
+        },
+      },
+      legend: { enabled: false },
+      credits: { enabled: false },
+      series: [
+        {
+          type: "bar",
           name: "Allocation",
           data,
         },
@@ -801,6 +999,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           displayName: p.label,
           rawGain: p.gain,
           isLoss: p.isLoss,
+          drilldown: p.drilldown,
+          detailCount: p.detailCount,
+          detailLabel: p.detailLabel,
         }))
       : [
           {
@@ -816,6 +1017,17 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         type: "pie",
         backgroundColor: "transparent",
         height: 300,
+      },
+      drilldown: {
+        series: plData.drilldownSeriesPie,
+        drillUpButton: {
+          theme: {
+            fill: "rgba(15, 23, 42, 0.85)",
+            stroke: "rgba(255, 255, 255, 0.12)",
+            r: 8,
+            style: { color: "#e9ecf4" },
+          },
+        },
       },
       title: {
         useHTML: true,
@@ -839,6 +1051,8 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             displayName?: string;
             isDummy?: boolean;
             rawGain?: number;
+            detailCount?: number;
+            detailLabel?: string;
           };
           if (options.isDummy) {
             return "Add holdings/prices to see P/L mix";
@@ -847,7 +1061,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           const rawGain = options.rawGain ?? 0;
           const value = `${rawGain >= 0 ? "+" : "-"}${formatMoney(Math.abs(rawGain), currency)}`;
           const percentage = (point.percentage || 0).toFixed(1);
-          return `<strong>${options.displayName || point.name}</strong><br/>${value}<br/>${percentage}% of total P/L`;
+          const detailCount = options.detailCount ?? 0;
+          const detailLabel = options.detailLabel || "lots";
+          const detailLine =
+            detailCount > 1 || detailCount === 1 ? `<br/>${detailCount} ${detailLabel}` : "";
+          return `<strong>${options.displayName || point.name}</strong><br/>${value}<br/>${percentage}% of total P/L${detailLine}`;
         },
       },
       plotOptions: {
@@ -909,6 +1127,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           displayName: p.label,
           rawGain: p.gain,
           share: plData.total > 0 ? Math.abs(p.gain) / plData.total : 0,
+          drilldown: p.drilldown,
+          detailCount: p.detailCount,
+          detailLabel: p.detailLabel,
         }))
       : [];
 
@@ -917,6 +1138,17 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         type: "bar",
         backgroundColor: "transparent",
         height: 300,
+      },
+      drilldown: {
+        series: plData.drilldownSeriesBar,
+        drillUpButton: {
+          theme: {
+            fill: "rgba(15, 23, 42, 0.85)",
+            stroke: "rgba(255, 255, 255, 0.12)",
+            r: 8,
+            style: { color: "#e9ecf4" },
+          },
+        },
       },
       title: { text: null },
       xAxis: {
@@ -956,6 +1188,8 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             displayName?: string;
             rawGain?: number;
             share?: number;
+            detailCount?: number;
+            detailLabel?: string;
           };
           const currency = options.currency || totalCurrency;
           const rawGain = options.rawGain ?? (point.y as number) ?? 0;
@@ -964,9 +1198,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             options.share !== undefined
               ? `${(options.share * 100).toFixed(1)}% of total P/L`
               : null;
+          const detailCount = options.detailCount ?? 0;
+          const detailLabel = options.detailLabel || "lots";
+          const detailLine =
+            detailCount > 1 || detailCount === 1 ? `${detailCount} ${detailLabel}` : null;
           return `<strong>${options.displayName || point.name}</strong><br/>${value}${
             share ? `<br/>${share}` : ""
-          }`;
+          }${detailLine ? `<br/>${detailLine}` : ""}`;
         },
       },
       plotOptions: {
@@ -1009,6 +1247,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     };
   }, [plData, totalCurrency]);
 
+  const allocationChartOptions =
+    allocationChartType === "donut" ? allocationOptions : allocationBarOptions;
+  const allocationToggleLabel =
+    allocationChartType === "donut" ? "Show bar chart" : "Show donut chart";
   const plChartOptions = plChartType === "donut" ? plDonutOptions : plBarOptions;
   const plToggleLabel = plChartType === "donut" ? "Show bar chart" : "Show donut chart";
   const chartGroupLabel =
@@ -1745,6 +1987,20 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       </p>
                     </div>
                   </div>
+                  <label className="chart-group-label">
+                    Group by
+                    <select
+                      className="chart-select"
+                      value={chartGroupBy}
+                      onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                    >
+                      {CHART_GROUP_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   {loading && <span className="pill ghost">Loading…</span>}
                   {!loading && status.kind === "error" && (
                     <span className="pill danger">API issue</span>
@@ -1817,30 +2073,47 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     <h3>{displayMoney(selectedLiquidity, totalCurrency)}</h3>
                   </div>
                 </div>
-                <div className="summary-controls">
-                  <label className="chart-group-label">
-                    Group by
-                    <select
-                      className="chart-select"
-                      value={chartGroupBy}
-                      onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
-                    >
-                      {CHART_GROUP_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
                   <div className="summary-charts">
                     <div className="summary-chart">
                       <div className="summary-chart-header">
                         <p className="eyebrow">Allocation</p>
-                        <h3>Portfolio mix</h3>
+                        <div className="summary-chart-title">
+                          <h3>Portfolio mix</h3>
+                          {allocationChartType === "bar" && allocationData.total > 0 && (
+                            <span className="pill ghost">
+                              Total {formatMoney(allocationData.total, totalCurrency)}
+                            </span>
+                          )}
+                        </div>
                         <p className="muted helper">
                           Based on latest prices · Grouped by {chartGroupLabel.toLowerCase()}
                         </p>
+                        <button
+                          type="button"
+                          className="icon-button compact chart-toggle"
+                          onClick={() =>
+                            setAllocationChartType((prev) => (prev === "donut" ? "bar" : "donut"))
+                          }
+                          aria-label={allocationToggleLabel}
+                          title={allocationToggleLabel}
+                          aria-pressed={allocationChartType === "bar"}
+                        >
+                          {allocationChartType === "donut" ? (
+                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                              <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                              <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                              <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                            </svg>
+                          ) : (
+                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                              <path
+                                d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                                fill="currentColor"
+                                fillRule="evenodd"
+                              />
+                            </svg>
+                          )}
+                        </button>
                         <button
                           type="button"
                           className="icon-button compact zoom-button"
@@ -1853,7 +2126,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       <div className="chart-wrapper">
                         <HighchartsReact
                           highcharts={Highcharts}
-                          options={allocationOptions}
+                          options={allocationChartOptions}
                       />
                     </div>
                     {(!allocationData.points.length || !allocationData.total) && (
@@ -1864,7 +2137,14 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     <div className="summary-chart">
                       <div className="summary-chart-header">
                         <p className="eyebrow">Performance</p>
-                        <h3>P/L mix</h3>
+                        <div className="summary-chart-title">
+                          <h3>P/L mix</h3>
+                          {plChartType === "bar" && chartGainAbs !== null && chartGainAbs !== undefined && (
+                            <span className="pill ghost">
+                              Total {formatMoneySigned(chartGainAbs, totalCurrency)}
+                            </span>
+                          )}
+                        </div>
                         <p className="muted helper">
                           Absolute gains vs losses by {chartGroupLabel.toLowerCase()}
                         </p>
@@ -2872,9 +3152,26 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             <div className="symbol-modal-header chart-modal-header">
               <div>
                 <p className="eyebrow">{zoomedChart === "allocation" ? "Allocation" : "Performance"}</p>
-                <h3 id="zoom-chart-title">
-                  {zoomedChart === "allocation" ? "Portfolio mix" : "P/L mix"}
-                </h3>
+                <div className="summary-chart-title">
+                  <h3 id="zoom-chart-title">
+                    {zoomedChart === "allocation" ? "Portfolio mix" : "P/L mix"}
+                  </h3>
+                  {zoomedChart === "allocation" &&
+                    allocationChartType === "bar" &&
+                    allocationData.total > 0 && (
+                    <span className="pill ghost">
+                      Total {formatMoney(allocationData.total, totalCurrency)}
+                    </span>
+                  )}
+                  {zoomedChart === "pl" &&
+                    plChartType === "bar" &&
+                    chartGainAbs !== null &&
+                    chartGainAbs !== undefined && (
+                      <span className="pill ghost">
+                        Total {formatMoneySigned(chartGainAbs, totalCurrency)}
+                      </span>
+                    )}
+                </div>
               </div>
               <div className="chart-modal-actions">
                 <label className="chart-group-label">
@@ -2891,6 +3188,62 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     ))}
                   </select>
                 </label>
+                {zoomedChart === "allocation" && (
+                  <button
+                    type="button"
+                    className="icon-button compact"
+                    onClick={() =>
+                      setAllocationChartType((prev) => (prev === "donut" ? "bar" : "donut"))
+                    }
+                    aria-label={allocationToggleLabel}
+                    title={allocationToggleLabel}
+                    aria-pressed={allocationChartType === "bar"}
+                  >
+                    {allocationChartType === "donut" ? (
+                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                        <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                        <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <path
+                          d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                          fill="currentColor"
+                          fillRule="evenodd"
+                        />
+                      </svg>
+                    )}
+                  </button>
+                )}
+                {zoomedChart === "pl" && (
+                  <button
+                    type="button"
+                    className="icon-button compact"
+                    onClick={() =>
+                      setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))
+                    }
+                    aria-label={plToggleLabel}
+                    title={plToggleLabel}
+                    aria-pressed={plChartType === "bar"}
+                  >
+                    {plChartType === "donut" ? (
+                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                        <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                        <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <path
+                          d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                          fill="currentColor"
+                          fillRule="evenodd"
+                        />
+                      </svg>
+                    )}
+                  </button>
+                )}
                 <button
                   className="modal-close"
                   type="button"
@@ -2904,9 +3257,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
               <HighchartsReact
                 highcharts={Highcharts}
                 options={{
-                  ...(zoomedChart === "allocation" ? allocationOptions : plChartOptions),
+                  ...(zoomedChart === "allocation"
+                    ? allocationChartOptions
+                    : plChartOptions),
                   chart: {
-                    ...(zoomedChart === "allocation" ? allocationOptions.chart : plChartOptions.chart),
+                    ...(zoomedChart === "allocation"
+                      ? allocationChartOptions.chart
+                      : plChartOptions.chart),
                     height: 520,
                   },
                 }}

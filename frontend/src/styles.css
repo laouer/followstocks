@@ -354,6 +354,13 @@ body {
   margin: 6px 0 0;
 }
 
+.summary-chart-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .chart-wrapper {
   min-height: 280px;
 }
@@ -498,6 +505,15 @@ body {
 .analysis-name {
   font-weight: 600;
 }
+
+g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highcharts-button-pressed > text {
+  fill: var(--text)!important;
+}
+
+g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highcharts-button-normal > text {
+  fill:  rgb(56, 189, 248) !important;
+}
+
 
 .analysis-link {
   color: var(--text);
