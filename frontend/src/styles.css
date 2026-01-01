@@ -969,6 +969,29 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
   gap: 10px;
 }
 
+.confirm-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.confirm-warning {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  background: rgba(249, 115, 22, 0.12);
+  color: #ffb16f;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.confirm-details {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .account-modal-body {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
@@ -1087,6 +1110,12 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   color: #041016;
   box-shadow: 0 10px 25px rgba(34, 197, 94, 0.2);
+}
+
+.button.danger {
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.95), rgba(239, 68, 68, 0.9));
+  color: #1a0c05;
+  box-shadow: 0 10px 25px rgba(249, 115, 22, 0.2);
 }
 
 .button.compact {

@@ -102,6 +102,13 @@ def update_account(
 
 
 def delete_account(db: Session, account: models.Account) -> None:
+    holdings = (
+        db.query(models.Holding)
+        .filter(models.Holding.account_id == account.id)
+        .all()
+    )
+    for holding in holdings:
+        db.delete(holding)
     db.delete(account)
     db.commit()
 
@@ -134,7 +141,6 @@ def create_holding(db: Session, user_id: int, data: schemas.HoldingCreate) -> mo
         sector=data.sector,
         industry=data.industry,
         asset_type=data.asset_type,
-        account=data.account,
         isin=data.isin,
         acquired_at=data.acquired_at,
         mic=data.mic,

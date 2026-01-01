@@ -621,10 +621,9 @@ def delete_account(
     account = crud.get_account(db, current_user.id, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    if account.holdings:
-        raise HTTPException(status_code=400, detail="Account has holdings")
+    deleted_holdings = len(account.holdings)
     crud.delete_account(db, account)
-    return {"status": "deleted"}
+    return {"status": "deleted", "deleted_holdings": deleted_holdings}
 
 
 @app.post("/auth/login", response_model=schemas.TokenResponse)

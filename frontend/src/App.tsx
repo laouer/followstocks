@@ -239,6 +239,7 @@ function App() {
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [showAccounts, setShowAccounts] = useState(false);
+  const [accountDeleteTarget, setAccountDeleteTarget] = useState<Account | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const includeAllRef = useRef<HTMLInputElement | null>(null);
 
@@ -551,6 +552,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   }, [chartGroupBy, chartHoldings, totalCurrency]);
 
   const plData = useMemo(() => {
+    const slugify = (value: string) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
     const resolveGroupLabel = (holding: HoldingStats) => {
       switch (chartGroupBy) {
         case "account":
@@ -669,7 +675,15 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       return { points, total, drilldownSeriesPie, drilldownSeriesBar };
     }
 
-    const grouped = new Map<string, { label: string; gain: number }>();
+    const grouped = new Map<
+      string,
+      {
+        id: string;
+        label: string;
+        gain: number;
+        holdings: Map<string, { name: string; label: string; gain: number }>;
+      }
+    >();
     chartHoldings.forEach((holding) => {
       const price = holding.last_price ?? null;
       const marketValueNative =
@@ -684,8 +698,35 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       if (Number.isNaN(gainAbs)) return;
       const label = resolveGroupLabel(holding) || "Uncategorized";
       const key = label.toLowerCase();
-      const entry = grouped.get(key) || { label, gain: 0 };
+      const groupId = `pl-group-${chartGroupBy}-${slugify(label)}`;
+      const entry =
+        grouped.get(key) ||
+        ({
+          id: groupId,
+          label,
+          gain: 0,
+          holdings: new Map<string, { name: string; label: string; gain: number }>(),
+        } as {
+          id: string;
+          label: string;
+          gain: number;
+          holdings: Map<string, { name: string; label: string; gain: number }>;
+        });
       entry.gain += gainAbs;
+      const symbol = (holding.symbol || holding.isin || `holding-${holding.id}`)
+        .toString()
+        .toUpperCase();
+      const holdingLabel = holding.name || holding.symbol || holding.isin || symbol;
+      const holdingKey = symbol.toLowerCase();
+      const holdingEntry =
+        entry.holdings.get(holdingKey) ||
+        ({
+          name: symbol,
+          label: holdingLabel,
+          gain: 0,
+        } as { name: string; label: string; gain: number });
+      holdingEntry.gain += gainAbs;
+      entry.holdings.set(holdingKey, holdingEntry);
       grouped.set(key, entry);
     });
 
@@ -700,6 +741,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           y: Number(amount.toFixed(2)),
           currency: totalCurrency,
           isLoss: entry.gain < 0,
+          drilldown: entry.holdings.size >= 1 ? entry.id : undefined,
+          detailCount: entry.holdings.size,
+          detailLabel: entry.holdings.size === 1 ? "holding" : "holdings",
         };
       })
       .filter(Boolean) as Array<{
@@ -709,9 +753,55 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       y: number;
       currency: string;
       isLoss: boolean;
+      drilldown?: string;
+      detailCount?: number;
+      detailLabel?: string;
     }>;
+    const drilldownSeriesPie = Array.from(grouped.values()).map(
+      (entry) =>
+        ({
+          type: "pie",
+          id: entry.id,
+          name: entry.label,
+          data: Array.from(entry.holdings.values())
+            .map((item, idx) => ({
+              name: item.name,
+              y: Number(Math.abs(item.gain).toFixed(2)),
+              color:
+                item.gain < 0
+                  ? LOSS_COLOR
+                  : ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+              currency: totalCurrency,
+              displayName: item.label,
+              rawGain: item.gain,
+              isLoss: item.gain < 0,
+            }))
+            .filter((item) => item.y > 0),
+        }) as Highcharts.SeriesOptionsType
+    );
+    const drilldownSeriesBar = Array.from(grouped.values()).map(
+      (entry) =>
+        ({
+          type: "bar",
+          id: entry.id,
+          name: entry.label,
+          data: Array.from(entry.holdings.values())
+            .map((item, idx) => ({
+              name: item.name,
+              y: Number(item.gain.toFixed(2)),
+              color:
+                item.gain < 0
+                  ? LOSS_COLOR
+                  : ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+              currency: totalCurrency,
+              displayName: item.label,
+              rawGain: item.gain,
+            }))
+            .filter((item) => item.y !== 0),
+        }) as Highcharts.SeriesOptionsType
+    );
     const total = points.reduce((sum, p) => sum + p.y, 0);
-    return { points, total, drilldownSeriesPie: [], drilldownSeriesBar: [] };
+    return { points, total, drilldownSeriesPie, drilldownSeriesBar };
   }, [chartGroupBy, chartHoldings, totalCurrency]);
 
   const chartGainAbs = useMemo(() => {
@@ -1867,11 +1957,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       await deleteAccount(accountId);
       await loadPortfolio();
       setStatus({ kind: "success", message: "Account deleted" });
+      return true;
     } catch (err) {
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         "Failed to delete account";
       setStatus({ kind: "error", message: detail });
+      return false;
     }
   };
 
@@ -2296,15 +2388,15 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                             >
                               ✏️
                             </button>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Delete ${account.name}`}
-                              onClick={() => handleDeleteAccount(account.id)}
-                            >
-                              🗑️
-                            </button>
-                          </span>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label={`Delete ${account.name}`}
+                            onClick={() => setAccountDeleteTarget(account)}
+                          >
+                            🗑️
+                          </button>
+                        </span>
                         </div>
                       ))}
                     </div>
@@ -3268,6 +3360,73 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   },
                 }}
               />
+            </div>
+          </div>
+        </div>
+      )}
+      {accountDeleteTarget && (
+        <div
+          className="symbol-modal-backdrop"
+          onClick={() => setAccountDeleteTarget(null)}
+        >
+          <div
+            className="symbol-modal confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-account-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">Delete account</p>
+                <h3 id="delete-account-title">
+                  Delete {accountDeleteTarget.name}?
+                </h3>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                onClick={() => setAccountDeleteTarget(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="confirm-modal-body">
+              <p className="confirm-warning">
+                This will permanently delete the account and all its holdings. This action is
+                irreversible.
+              </p>
+              <div className="confirm-details">
+                <span className="pill ghost">
+                  Holdings {accountHoldingsCount.get(accountDeleteTarget.id) || 0}
+                </span>
+                <span className="pill ghost">
+                  Liquidity {formatMoney(accountDeleteTarget.liquidity, totalCurrency)}
+                </span>
+              </div>
+            </div>
+            <div className="symbol-modal-footer">
+              <div className="footer-right">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => setAccountDeleteTarget(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button danger"
+                  type="button"
+                  onClick={async () => {
+                    const success = await handleDeleteAccount(accountDeleteTarget.id);
+                    if (success) {
+                      setAccountDeleteTarget(null);
+                    }
+                  }}
+                >
+                  Delete account
+                </button>
+              </div>
             </div>
           </div>
         </div>
