@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Link } from "react-router-dom";
 import Highcharts from "highcharts";
 import HighchartsDrilldown from "highcharts/modules/drilldown";
 import HighchartsReact from "highcharts-react-official";
+import FloatingSidebar from "./FloatingSidebar";
 import {
   PortfolioResponse,
   HoldingStats,
@@ -207,6 +207,7 @@ function App() {
   });
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
+  const [showAccounts, setShowAccounts] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const includeAllRef = useRef<HTMLInputElement | null>(null);
 
@@ -1634,6 +1635,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
 
   return (
     <div className="page">
+      <FloatingSidebar />
 
       <main className="grid">
         {!isAuthed ? (
@@ -1659,12 +1661,6 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     </p>
                   </div>
                 </div>
-                <Link className="button compact" to="/analysis/cac40">
-                  CAC40 analysis
-                </Link>
-                <Link className="button compact" to="/simulate/assurance-vie">
-                  Assurance vie simulator
-                </Link>
                 <button
                   type="button"
                   className="button compact"
@@ -1749,22 +1745,42 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       </p>
                     </div>
                   </div>
-                  <Link className="button compact" to="/analysis/cac40">
-                    CAC40 analysis
-                  </Link>
-                  <Link className="button compact" to="/simulate/assurance-vie">
-                    Assurance vie simulator
-                  </Link>
                   {loading && <span className="pill ghost">Loading…</span>}
                   {!loading && status.kind === "error" && (
                     <span className="pill danger">API issue</span>
                   )}
                   <button
                     type="button"
-                    className="button compact"
+                    className="button compact icon-only"
                     onClick={handleLogout}
+                    aria-label="Log out"
                   >
-                    Log out
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path
+                        d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M10 17l5-5-5-5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M15 12H4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </button>
                 </div>
               </div>
@@ -1919,61 +1935,101 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   >
                     Add account
                   </button>
+                  <button
+                    type="button"
+                    className="button compact icon-only"
+                    onClick={() => setShowAccounts((prev) => !prev)}
+                    aria-label={showAccounts ? "Hide accounts" : "Show accounts"}
+                  >
+                    {showAccounts ? (
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path
+                          d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path
+                          d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                        <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+                        <path
+                          d="M4 4l16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    )}
+                  </button>
                 </div>
               </div>
-              {accounts.length === 0 ? (
-                <p className="empty">Add an account to organize your holdings.</p>
-              ) : (
-                <div className="table account-table">
-                  <div className="table-head">
-                    <span>Name</span>
-                    <span>Type</span>
-                    <span>Liquidity</span>
-                    <span>Holdings</span>
-                    <span>Actions</span>
+              {showAccounts &&
+                (accounts.length === 0 ? (
+                  <p className="empty">Add an account to organize your holdings.</p>
+                ) : (
+                  <div className="table account-table">
+                    <div className="table-head">
+                      <span>Name</span>
+                      <span>Type</span>
+                      <span>Liquidity</span>
+                      <span>Holdings</span>
+                      <span>Actions</span>
+                    </div>
+                    <div className="table-body">
+                      {accounts.map((account) => (
+                        <div className="table-row" key={account.id}>
+                          <span data-label="Name">{account.name}</span>
+                          <span data-label="Type">{account.account_type || "—"}</span>
+                          <span data-label="Liquidity">
+                            {formatMoney(account.liquidity, totalCurrency)}
+                          </span>
+                          <span data-label="Holdings">
+                            {accountHoldingsCount.get(account.id) || 0}
+                          </span>
+                          <span className="account-actions" data-label="Actions">
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={`Edit ${account.name}`}
+                              onClick={() => {
+                                setAccountForm({
+                                  name: account.name,
+                                  account_type: account.account_type || "",
+                                  liquidity: String(account.liquidity ?? 0),
+                                });
+                                setEditingAccountId(account.id);
+                                setShowAccountModal(true);
+                              }}
+                            >
+                              ✏️
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={`Delete ${account.name}`}
+                              onClick={() => handleDeleteAccount(account.id)}
+                            >
+                              🗑️
+                            </button>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="table-body">
-                    {accounts.map((account) => (
-                      <div className="table-row" key={account.id}>
-                        <span data-label="Name">{account.name}</span>
-                        <span data-label="Type">{account.account_type || "—"}</span>
-                        <span data-label="Liquidity">
-                          {formatMoney(account.liquidity, totalCurrency)}
-                        </span>
-                        <span data-label="Holdings">
-                          {accountHoldingsCount.get(account.id) || 0}
-                        </span>
-                        <span className="account-actions" data-label="Actions">
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label={`Edit ${account.name}`}
-                            onClick={() => {
-                              setAccountForm({
-                                name: account.name,
-                                account_type: account.account_type || "",
-                                liquidity: String(account.liquidity ?? 0),
-                              });
-                              setEditingAccountId(account.id);
-                              setShowAccountModal(true);
-                            }}
-                          >
-                            ✏️
-                          </button>
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label={`Delete ${account.name}`}
-                            onClick={() => handleDeleteAccount(account.id)}
-                          >
-                            🗑️
-                          </button>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                ))}
             </section>
 
             <section className="card">

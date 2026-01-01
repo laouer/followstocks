@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import FloatingSidebar from "./FloatingSidebar";
 import { Cac40AnalysisResponse, Cac40Metric, fetchCac40Analysis } from "./api";
 
 type Status = {
@@ -196,6 +196,7 @@ function Cac40Analysis() {
 
   return (
     <div className="page">
+      <FloatingSidebar />
       <main className="grid">
         <section className="card">
           <div className="card-header">
@@ -205,12 +206,6 @@ function Cac40Analysis() {
               <p className="muted helper">{metricMeta?.description}</p>
             </div>
             <div className="card-actions">
-              <Link className="button compact" to="/">
-                Portfolio
-              </Link>
-              <Link className="button compact" to="/simulate/assurance-vie">
-                Assurance vie simulator
-              </Link>
               <button className="button compact" type="button" onClick={loadAnalysis}>
                 Refresh
               </button>

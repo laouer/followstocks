@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
+import FloatingSidebar from "./FloatingSidebar";
 
 const formatMoney = (value?: number | null, currency = "EUR") => {
   if (value === null || value === undefined) return "—";
@@ -28,6 +28,24 @@ const parseNumber = (value: string, fallback = 0) => {
   const normalized = value.replace(",", ".").trim();
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const computeAxisBounds = (values: number[]) => {
+  const filtered = values.filter((value) => Number.isFinite(value));
+  if (!filtered.length) return { min: undefined, max: undefined };
+  const minVal = Math.min(...filtered);
+  const maxVal = Math.max(...filtered);
+  const padding = Math.max(Math.abs(minVal), Math.abs(maxVal)) * 0.1;
+  if (minVal === maxVal) {
+    return {
+      min: minVal - (padding || 1),
+      max: maxVal + (padding || 1),
+    };
+  }
+  return {
+    min: minVal - Math.abs(minVal) * 0.1,
+    max: maxVal + Math.abs(maxVal) * 0.1,
+  };
 };
 
 const computeIrr = (cashFlows: number[]) => {
@@ -202,6 +220,11 @@ function AssuranceVieSimulator() {
     const contributions = simulation.rows.map((row) =>
       Number(row.contributions.toFixed(2))
     );
+    const axisBounds = computeAxisBounds([
+      ...valueBeforeTax,
+      ...valueAfterTax,
+      ...contributions,
+    ]);
 
     return {
       chart: {
@@ -221,6 +244,8 @@ function AssuranceVieSimulator() {
       yAxis: {
         title: { text: null },
         gridLineColor: "rgba(255, 255, 255, 0.08)",
+        min: axisBounds.min,
+        max: axisBounds.max,
         labels: {
           style: { color: "#9fb3d1", fontSize: "11px" },
           formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
@@ -284,6 +309,7 @@ function AssuranceVieSimulator() {
 
   return (
     <div className="page">
+      <FloatingSidebar />
       <main className="grid">
         <section className="card sim-card">
           <div className="card-header">
@@ -293,14 +319,6 @@ function AssuranceVieSimulator() {
               <p className="muted helper">
                 Modélisez les frais d'entrée, de gestion et de sortie avec vos hypothèses fiscales.
               </p>
-            </div>
-            <div className="card-actions">
-              <Link className="button compact" to="/">
-                Portefeuille
-              </Link>
-              <Link className="button compact" to="/analysis/cac40">
-                Analyse CAC40
-              </Link>
             </div>
           </div>
 

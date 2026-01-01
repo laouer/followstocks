@@ -163,6 +163,87 @@ body {
   gap: 16px;
 }
 
+.floating-nav {
+  position: fixed;
+  top: 50%;
+  right: 24px;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 18px;
+  background: rgba(8, 14, 28, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  z-index: 60;
+}
+
+.floating-nav-link {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease,
+    color 120ms ease, border-color 120ms ease;
+  position: relative;
+}
+
+.floating-nav-link svg {
+  width: 20px;
+  height: 20px;
+}
+
+.floating-nav-link:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.floating-nav-link.active {
+  color: var(--text);
+  background: rgba(34, 197, 94, 0.16);
+  border-color: rgba(34, 197, 94, 0.4);
+  box-shadow: 0 10px 22px rgba(34, 197, 94, 0.18);
+}
+
+.floating-nav-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.floating-nav-icon {
+  display: inline-flex;
+}
+
+.floating-nav-tooltip {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-6px);
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.95);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.floating-nav-link:hover .floating-nav-tooltip,
+.floating-nav-link:focus-visible .floating-nav-tooltip {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
 .sim-grid {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) 2fr;
@@ -996,6 +1077,15 @@ body {
   padding: 10px 12px;
 }
 
+.button.icon-only {
+  padding: 10px;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .button:hover {
   transform: translateY(-1px);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
@@ -1021,6 +1111,57 @@ body {
   color: #ffb16f;
 }
 
+@media (max-width: 1200px) {
+  .sim-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-kpis {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+
+  .sim-form {
+    padding: 12px;
+  }
+
+  .sim-form .form {
+    gap: 8px;
+  }
+
+  .sim-block {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    column-gap: 12px;
+    row-gap: 8px;
+    padding: 8px 0;
+  }
+
+  .sim-block h4 {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+
+  .sim-block label {
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  .sim-block label input,
+  .sim-block label select {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .sim-card-term .sim-grid {
+    grid-template-columns: minmax(240px, 1fr) 1.4fr;
+  }
+
+  .sim-card-term .sim-kpis {
+    grid-template-columns: repeat(2, minmax(160px, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .hero {
     flex-direction: column;
@@ -1037,6 +1178,21 @@ body {
 
   .sim-grid {
     grid-template-columns: 1fr;
+  }
+
+  .floating-nav {
+    top: auto;
+    right: auto;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    flex-direction: row;
+    border-radius: 999px;
+    padding: 8px 10px;
+  }
+
+  .floating-nav-tooltip {
+    display: none;
   }
 
   .chart-modal-header {
