@@ -326,6 +326,22 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     };
   }, [chartHoldings, summary]);
 
+  const selectedLiquidity = useMemo(() => {
+    if (!chartHoldings.length) return null;
+    const accountIds = new Set<number>();
+    chartHoldings.forEach((holding) => {
+      const accountId = holding.account_id ?? holding.account?.id;
+      if (accountId) {
+        accountIds.add(accountId);
+      }
+    });
+    if (!accountIds.size) return null;
+    return accounts.reduce(
+      (sum, account) => (accountIds.has(account.id) ? sum + (account.liquidity || 0) : sum),
+      0
+    );
+  }, [accounts, chartHoldings]);
+
   const allocationData = useMemo(() => {
     const resolveGroupLabel = (holding: HoldingStats) => {
       switch (chartGroupBy) {
@@ -1646,6 +1662,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 <Link className="button compact" to="/analysis/cac40">
                   CAC40 analysis
                 </Link>
+                <Link className="button compact" to="/simulate/assurance-vie">
+                  Assurance vie simulator
+                </Link>
                 <button
                   type="button"
                   className="button compact"
@@ -1733,6 +1752,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <Link className="button compact" to="/analysis/cac40">
                     CAC40 analysis
                   </Link>
+                  <Link className="button compact" to="/simulate/assurance-vie">
+                    Assurance vie simulator
+                  </Link>
                   {loading && <span className="pill ghost">Loading…</span>}
                   {!loading && status.kind === "error" && (
                     <span className="pill danger">API issue</span>
@@ -1773,6 +1795,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         ({formatPercentSigned(enhancedSummary.total_gain_pct)})
                       </span>
                     </h3>
+                  </div>
+                  <div className="stat">
+                    <p>Liquidity</p>
+                    <h3>{displayMoney(selectedLiquidity, totalCurrency)}</h3>
                   </div>
                 </div>
                 <div className="summary-controls">

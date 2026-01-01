@@ -208,6 +208,9 @@ function Cac40Analysis() {
               <Link className="button compact" to="/">
                 Portfolio
               </Link>
+              <Link className="button compact" to="/simulate/assurance-vie">
+                Assurance vie simulator
+              </Link>
               <button className="button compact" type="button" onClick={loadAnalysis}>
                 Refresh
               </button>

@@ -163,6 +163,68 @@ body {
   gap: 16px;
 }
 
+.sim-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 2fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.sim-form {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+
+.sim-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+.sim-block:last-child {
+  border-bottom: none;
+}
+
+.sim-block h4 {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sim-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sim-kpis {
+  margin-top: 0;
+}
+
+.sim-chart {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow);
+}
+
+.sim-footer {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sim-footer p {
+  margin: 4px 0;
+}
+
 .summary-charts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
@@ -505,7 +567,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-direction: row;
+  flex-direction: row !important;
 }
 
 .instrument-cell {
@@ -971,6 +1033,10 @@ body {
 
   .summary-controls {
     justify-content: flex-start;
+  }
+
+  .sim-grid {
+    grid-template-columns: 1fr;
   }
 
   .chart-modal-header {
