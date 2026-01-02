@@ -18,6 +18,7 @@ class User(Base):
 
     holdings = relationship("Holding", back_populates="user", cascade="all, delete-orphan")
     accounts = relationship("Account", back_populates="user", cascade="all, delete-orphan")
+    transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
 
 
 class Account(Base):
@@ -28,11 +29,13 @@ class Account(Base):
     name = Column(String, nullable=False)
     account_type = Column(String, nullable=True)
     liquidity = Column(Float, default=0.0, nullable=False)
+    manual_invested = Column(Float, default=0.0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="accounts")
     holdings = relationship("Holding", back_populates="account", cascade="all, delete-orphan")
+    transactions = relationship("Transaction", back_populates="account", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("user_id", "name", name="uix_account_user_name"),)
 
@@ -47,7 +50,10 @@ class Holding(Base):
     shares = Column(Float, nullable=False)
     cost_basis = Column(Float, nullable=False)  # per share
     acquisition_fee_value = Column(Float, default=0.0, nullable=False)
+    fx_rate = Column(Float, nullable=True)
     currency = Column(String, default="USD", nullable=False)
+    last_price = Column(Float, nullable=True)
+    last_snapshot_at = Column(DateTime, nullable=True)
     sector = Column(String, nullable=True)
     industry = Column(String, nullable=True)
     asset_type = Column(String, nullable=True)
@@ -61,23 +67,26 @@ class Holding(Base):
 
     user = relationship("User", back_populates="holdings")
     account = relationship("Account", back_populates="holdings")
-    snapshots = relationship(
-        "PriceSnapshot",
-        back_populates="holding",
-        cascade="all, delete-orphan",
-        order_by="PriceSnapshot.recorded_at.desc()",
-    )
 
 
-
-class PriceSnapshot(Base):
-    __tablename__ = "price_snapshots"
+class Transaction(Base):
+    __tablename__ = "transactions"
 
     id = Column(Integer, primary_key=True, index=True)
-    holding_id = Column(Integer, ForeignKey("holdings.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    symbol = Column(String, index=True, nullable=False)
+    side = Column(String, nullable=False)  # BUY or SELL
+    shares = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
-    recorded_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    fee_value = Column(Float, default=0.0, nullable=False)
+    currency = Column(String, default="USD", nullable=False)
+    executed_at = Column(Date, nullable=True)
+    realized_gain = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    holding = relationship("Holding", back_populates="snapshots")
+    user = relationship("User", back_populates="transactions")
+    account = relationship("Account", back_populates="transactions")
 
-    __table_args__ = (UniqueConstraint("holding_id", "recorded_at", name="uix_snapshot_time"),)
+

@@ -65,6 +65,7 @@ class AccountBase(BaseModel):
     name: str = Field(..., min_length=1, description="Account name")
     account_type: Optional[str] = Field(None, description="Account type")
     liquidity: float = Field(0, ge=0, description="Cash available in the account currency")
+    manual_invested: float = Field(0, ge=0, description="Manual cash injected into the account")
 
     @field_validator("name", "account_type", mode="before")
     @classmethod
@@ -76,13 +77,18 @@ class AccountBase(BaseModel):
 
 
 class AccountCreate(AccountBase):
-    pass
+    created_at: Optional[datetime] = Field(
+        None,
+        description="Account creation date",
+    )
 
 
 class AccountUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1)
     account_type: Optional[str] = Field(None)
     liquidity: Optional[float] = Field(None, ge=0)
+    manual_invested: Optional[float] = Field(None, ge=0)
+    created_at: Optional[datetime] = Field(None)
 
     @field_validator("name", "account_type", mode="before")
     @classmethod
@@ -113,6 +119,11 @@ class HoldingBase(BaseModel):
         0,
         ge=0,
         description="Acquisition fee amount in the holding currency",
+    )
+    fx_rate: Optional[float] = Field(
+        None,
+        gt=0,
+        description="FX rate to EUR at purchase (only for non-EUR holdings)",
     )
     currency: CurrencyCode = Field("USD", description="Currency code for the holding (USD or EUR)")
     sector: Optional[str] = Field(None, description="Sector classification")
@@ -166,6 +177,7 @@ class HoldingUpdate(BaseModel):
     shares: Optional[float] = Field(None, gt=0)
     cost_basis: Optional[float] = Field(None, gt=0)
     acquisition_fee_value: Optional[float] = Field(None, ge=0)
+    fx_rate: Optional[float] = Field(None, gt=0, description="FX rate to EUR at purchase")
     currency: Optional[CurrencyCode] = Field(None, description="Currency code (USD or EUR)")
     sector: Optional[str] = Field(None, description="Sector classification")
     industry: Optional[str] = Field(None, description="Industry classification")
@@ -209,6 +221,33 @@ class HoldingUpdate(BaseModel):
         return v or None
 
 
+class HoldingSellRequest(BaseModel):
+    shares: float = Field(..., gt=0)
+    price: float = Field(..., gt=0)
+    fee_value: float = Field(0, ge=0)
+    executed_at: Optional[date] = Field(None, description="Sell date")
+    fx_rate: Optional[float] = Field(
+        None,
+        gt=0,
+        description="FX rate to EUR for non-EUR holdings",
+    )
+
+
+class HoldingRefundRequest(BaseModel):
+    fx_rate: Optional[float] = Field(
+        None,
+        gt=0,
+        description="FX rate to EUR for non-EUR holdings",
+    )
+
+
+class HoldingSellResult(BaseModel):
+    status: str
+    realized_gain: Optional[float] = None
+    remaining_shares: float = 0
+    account_liquidity: Optional[float] = None
+
+
 class Holding(HoldingBase):
     id: int
     created_at: datetime
@@ -225,14 +264,6 @@ class PriceSnapshotBase(BaseModel):
 
 class PriceSnapshotCreate(PriceSnapshotBase):
     holding_id: int = Field(..., description="Holding id for the snapshot")
-
-
-class PriceSnapshot(PriceSnapshotBase):
-    id: int
-    holding_id: int
-    recorded_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class HoldingStats(Holding):
@@ -258,6 +289,51 @@ class PortfolioResponse(BaseModel):
     summary: PortfolioSummary
     holdings: List[HoldingStats]
     accounts: List[Account] = []
+
+
+class TransactionBase(BaseModel):
+    account_id: int
+    symbol: str
+    side: str = Field(..., description="BUY or SELL")
+    shares: float = Field(..., gt=0)
+    price: float = Field(..., gt=0)
+    fee_value: float = Field(0, ge=0)
+    currency: CurrencyCode = Field("USD", description="Currency code (USD or EUR)")
+    executed_at: Optional[date] = None
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def normalize_symbol(cls, v: str) -> str:
+        return str(v).strip().upper()
+
+    @field_validator("side", mode="before")
+    @classmethod
+    def normalize_side(cls, v: str) -> str:
+        upper = str(v).strip().upper()
+        if upper not in {"BUY", "SELL"}:
+            raise ValueError("Side must be BUY or SELL")
+        return upper
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency_base(cls, v: str) -> CurrencyCode:
+        upper = v.upper()
+        if upper not in {"USD", "EUR"}:
+            raise ValueError("Currency must be USD or EUR")
+        return upper  # type: ignore[return-value]
+
+
+class TransactionCreate(TransactionBase):
+    pass
+
+
+class Transaction(TransactionBase):
+    id: int
+    realized_gain: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class HoldingsImportResult(BaseModel):

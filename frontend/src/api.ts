@@ -7,6 +7,7 @@ export interface HoldingStats {
   shares: number;
   cost_basis: number;
   acquisition_fee_value?: number | null;
+  fx_rate?: number | null;
   currency: string;
   sector?: string | null;
   industry?: string | null;
@@ -49,11 +50,19 @@ export interface HoldingsImportResult {
   errors: string[];
 }
 
+export interface HoldingSellResult {
+  status: string;
+  realized_gain?: number | null;
+  remaining_shares: number;
+  account_liquidity?: number | null;
+}
+
 export interface Account {
   id: number;
   name: string;
   account_type?: string | null;
   liquidity: number;
+  manual_invested?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -153,13 +162,21 @@ export async function createAccount(payload: {
   name: string;
   account_type?: string;
   liquidity?: number;
+  manual_invested?: number;
+  created_at?: string;
 }) {
   return api.post<Account>("/accounts", payload);
 }
 
 export async function updateAccount(
   accountId: number,
-  payload: { name?: string; account_type?: string; liquidity?: number }
+  payload: {
+    name?: string;
+    account_type?: string;
+    liquidity?: number;
+    manual_invested?: number;
+    created_at?: string;
+  }
 ) {
   return api.put<Account>(`/accounts/${accountId}`, payload);
 }
@@ -187,6 +204,7 @@ export async function createHolding(payload: {
   cost_basis: number;
   acquisition_fee_value?: number;
   currency?: string;
+  fx_rate?: number;
   sector?: string;
   industry?: string;
   asset_type?: string;
@@ -215,10 +233,6 @@ export async function addPriceSnapshot(payload: { holding_id: number; price: num
   return api.post("/prices", payload);
 }
 
-export async function fetchPrices(holdingId: number, limit = 12) {
-  return api.get(`/prices/${holdingId}`, { params: { limit } });
-}
-
 export async function updateHolding(
   holdingId: number,
   payload: {
@@ -243,6 +257,23 @@ export async function updateHolding(
 
 export async function deleteHolding(holdingId: number) {
   return api.delete(`/holdings/${holdingId}`);
+}
+
+export async function refundHolding(holdingId: number, payload?: { fx_rate?: number }) {
+  return api.post(`/holdings/${holdingId}/refund`, payload || {});
+}
+
+export async function sellHolding(
+  holdingId: number,
+  payload: {
+    shares: number;
+    price: number;
+    fee_value?: number;
+    executed_at?: string;
+    fx_rate?: number;
+  },
+) {
+  return api.post<HoldingSellResult>(`/holdings/${holdingId}/sell`, payload);
 }
 
 export async function searchInstruments(query: string) {

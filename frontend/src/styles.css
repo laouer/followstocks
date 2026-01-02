@@ -657,7 +657,16 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 
 .account-table .table-head,
 .account-table .table-row {
-  grid-template-columns: 1.4fr 1fr 0.9fr 0.6fr 0.6fr;
+  grid-template-columns: 0.8fr 1fr 1fr 1fr 0.8fr 0.8fr 0.8fr 0.6fr;
+}
+
+.account-table .summary-row {
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 600;
+}
+
+.account-table .summary-row small {
+  font-weight: 400;
 }
 
 .account-actions {
@@ -1153,6 +1162,26 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 
 .status-error {
   background: rgba(249, 115, 22, 0.12);
+  color: #ffb16f;
+}
+
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 300;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(12, 18, 36, 0.95);
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  max-width: min(320px, calc(100vw - 40px));
+  font-size: 14px;
+}
+
+.toast-error {
+  border-color: rgba(249, 115, 22, 0.4);
   color: #ffb16f;
 }
 

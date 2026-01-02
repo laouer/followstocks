@@ -434,27 +434,11 @@ def _upsert_snapshot_from_quote(
     except (TypeError, ValueError):
         recorded_at = datetime.utcnow()
 
-    existing = (
-        db.query(models.PriceSnapshot)
-        .filter(
-            models.PriceSnapshot.holding_id == holding.id,
-            models.PriceSnapshot.recorded_at == recorded_at,
-        )
-        .first()
-    )
-    if existing:
-        existing.price = price
-        holding.updated_at = datetime.utcnow()
-        db.add(existing)
-        db.add(holding)
-        db.commit()
-        return True
-
-    crud.add_price_snapshot(
-        db,
-        holding,
-        schemas.PriceSnapshotCreate(holding_id=holding.id, price=price, recorded_at=recorded_at),
-    )
+    holding.last_price = price
+    holding.last_snapshot_at = recorded_at
+    holding.updated_at = datetime.utcnow()
+    db.add(holding)
+    db.commit()
     return True
 
 
@@ -578,7 +562,14 @@ def list_accounts(
     db: Session = Depends(get_session),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    return crud.get_accounts(db, current_user.id)
+    accounts = crud.get_accounts(db, current_user.id)
+    for account in accounts:
+        if (account.liquidity or 0.0) < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Account {account.name} has negative liquidity. Please adjust it.",
+            )
+    return accounts
 
 
 @app.post("/accounts", response_model=schemas.Account)
@@ -608,6 +599,8 @@ def update_account(
         raise HTTPException(status_code=404, detail="Account not found")
     try:
         return crud.update_account(db, account, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except IntegrityError as exc:
         raise HTTPException(status_code=400, detail="Account already exists") from exc
 
@@ -653,7 +646,44 @@ async def create_holding(
         account = crud.get_account(db, current_user.id, holding.account_id)
         if not account:
             raise HTTPException(status_code=400, detail="Account not found")
+    buy_total = holding.shares * holding.cost_basis + (holding.acquisition_fee_value or 0.0)
+    rate = 1.0
+    if holding.currency.upper() != "EUR":
+        if holding.fx_rate:
+            rate = holding.fx_rate
+        else:
+            raise HTTPException(status_code=400, detail="FX rate is required for non-EUR holdings")
+    buy_total_eur = buy_total * rate
+    available_liquidity = account.liquidity or 0.0
+    new_liquidity = available_liquidity - buy_total_eur
+    if new_liquidity < 0:
+        if abs(new_liquidity) <= 1e-6:
+            new_liquidity = 0.0
+        else:
+            raise HTTPException(status_code=400, detail="Insufficient account liquidity for this buy")
     created = crud.create_holding(db, current_user.id, holding)
+    try:
+        account.liquidity = new_liquidity
+        account.updated_at = datetime.utcnow()
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Failed to update account liquidity for %s: %s", holding.symbol, exc)
+    try:
+        transaction = schemas.TransactionCreate(
+            account_id=holding.account_id,
+            symbol=holding.symbol,
+            side="BUY",
+            shares=holding.shares,
+            price=holding.cost_basis,
+            fee_value=holding.acquisition_fee_value,
+            currency=holding.currency,
+            executed_at=holding.acquired_at,
+        )
+        crud.create_transaction(db, current_user.id, transaction)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Failed to record BUY transaction for %s: %s", holding.symbol, exc)
     try:
         holdings = (
             db.query(models.Holding)
@@ -665,6 +695,76 @@ async def create_holding(
     except Exception as exc:  # noqa: BLE001
         log.warning("Failed to fetch/store initial price for %s: %s", created.symbol, exc)
     return created
+
+
+@app.post("/holdings/{holding_id}/sell", response_model=schemas.HoldingSellResult)
+def sell_holding(
+    holding_id: int,
+    payload: schemas.HoldingSellRequest,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    holding = crud.get_holding(db, current_user.id, holding_id)
+    if not holding:
+        raise HTTPException(status_code=404, detail="Holding not found")
+    if holding.shares <= 0:
+        raise HTTPException(status_code=400, detail="Holding has no shares to sell")
+    epsilon = 1e-6
+    if payload.shares > holding.shares + epsilon:
+        raise HTTPException(status_code=400, detail="Not enough shares to sell")
+    account = crud.get_account(db, current_user.id, holding.account_id)
+    if not account:
+        raise HTTPException(status_code=400, detail="Account not found")
+
+    fee_value = payload.fee_value or 0.0
+    total_cost = holding.shares * holding.cost_basis + (holding.acquisition_fee_value or 0.0)
+    cost_per_share = total_cost / holding.shares
+    proceeds = payload.price * payload.shares - fee_value
+    realized_gain = (payload.price - cost_per_share) * payload.shares - fee_value
+
+    rate = 1.0
+    if holding.currency.upper() != "EUR":
+        if payload.fx_rate:
+            rate = payload.fx_rate
+        else:
+            log.warning("Missing FX rate for %s sell; using 1.0", holding.currency)
+    account.liquidity = (account.liquidity or 0.0) + (proceeds * rate)
+    account.updated_at = datetime.utcnow()
+
+    remaining_shares = holding.shares - payload.shares
+    if remaining_shares <= epsilon:
+        db.delete(holding)
+        remaining_shares = 0.0
+    else:
+        holding.shares = remaining_shares
+        holding.cost_basis = cost_per_share
+        holding.acquisition_fee_value = 0.0
+        holding.updated_at = datetime.utcnow()
+        db.add(holding)
+
+    transaction = models.Transaction(
+        user_id=current_user.id,
+        account_id=account.id,
+        symbol=holding.symbol,
+        side="SELL",
+        shares=payload.shares,
+        price=payload.price,
+        fee_value=fee_value,
+        currency=holding.currency,
+        executed_at=payload.executed_at,
+        realized_gain=realized_gain,
+    )
+    db.add(account)
+    db.add(transaction)
+    db.commit()
+    db.refresh(account)
+
+    return schemas.HoldingSellResult(
+        status="sold",
+        realized_gain=realized_gain,
+        remaining_shares=remaining_shares,
+        account_liquidity=account.liquidity,
+    )
 
 
 @app.get("/holdings", response_model=List[schemas.HoldingStats])
@@ -953,6 +1053,24 @@ async def import_holdings(
 
             holding = schemas.HoldingCreate(**payload)
             created_holding = crud.create_holding(db, current_user.id, holding)
+            try:
+                transaction = schemas.TransactionCreate(
+                    account_id=holding.account_id,
+                    symbol=holding.symbol,
+                    side="BUY",
+                    shares=holding.shares,
+                    price=holding.cost_basis,
+                    fee_value=holding.acquisition_fee_value,
+                    currency=holding.currency,
+                    executed_at=holding.acquired_at,
+                )
+                crud.create_transaction(db, current_user.id, transaction)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "Import failed to record BUY transaction for %s: %s",
+                    holding.symbol,
+                    exc,
+                )
             if last_price is not None:
                 recorded_at = last_price_at or datetime.utcnow()
                 crud.add_price_snapshot(
@@ -1014,7 +1132,37 @@ def remove_holding(
     return {"status": "deleted"}
 
 
-@app.post("/prices", response_model=schemas.PriceSnapshot)
+@app.post("/holdings/{holding_id}/refund")
+def remove_holding_and_refund(
+    holding_id: int,
+    payload: schemas.HoldingRefundRequest | None = None,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    holding = crud.get_holding(db, current_user.id, holding_id)
+    if not holding:
+        raise HTTPException(status_code=404, detail="Holding not found")
+    account = crud.get_account(db, current_user.id, holding.account_id)
+    if not account:
+        raise HTTPException(status_code=400, detail="Account not found")
+    total_cost = holding.shares * holding.cost_basis + (holding.acquisition_fee_value or 0.0)
+    rate = 1.0
+    if holding.currency.upper() != "EUR":
+        fx_rate = payload.fx_rate if payload else None
+        if fx_rate:
+            rate = fx_rate
+        else:
+            log.warning("Missing FX rate for %s refund; using 1.0", holding.currency)
+    account.liquidity = (account.liquidity or 0.0) + (total_cost * rate)
+    account.updated_at = datetime.utcnow()
+    db.add(account)
+    db.delete(holding)
+    db.commit()
+    db.refresh(account)
+    return {"status": "deleted", "refunded": total_cost, "account_liquidity": account.liquidity}
+
+
+@app.post("/prices", response_model=schemas.HoldingStats)
 def add_price(
     snapshot: schemas.PriceSnapshotCreate,
     db: Session = Depends(get_session),
@@ -1023,20 +1171,8 @@ def add_price(
     holding = crud.get_holding(db, current_user.id, snapshot.holding_id)
     if not holding:
         raise HTTPException(status_code=404, detail="Holding not found")
-    return crud.add_price_snapshot(db, holding, snapshot)
-
-
-@app.get("/prices/{holding_id}", response_model=List[schemas.PriceSnapshot])
-def get_prices(
-    holding_id: int,
-    limit: int = Query(default=24, ge=1, le=500),
-    db: Session = Depends(get_session),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    prices = crud.get_snapshots_for_holding(db, current_user.id, holding_id, limit=limit)
-    if not prices:
-        raise HTTPException(status_code=404, detail="No price snapshots found")
-    return prices
+    updated = crud.add_price_snapshot(db, holding, snapshot)
+    return crud.build_holding_stats(db, updated)
 
 
 @app.get("/portfolio", response_model=schemas.PortfolioResponse)
@@ -1044,7 +1180,10 @@ def get_portfolio(
     db: Session = Depends(get_session),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    return crud.portfolio_summary(db, current_user.id)
+    try:
+        return crud.portfolio_summary(db, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/search", response_model=Any)
