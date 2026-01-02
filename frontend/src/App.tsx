@@ -3307,12 +3307,37 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     gainAbsNative !== undefined
                       ? formatMoney(gainAbsNative, holding.currency)
                       : null;
-                  const fxRate =
-                    holding.currency?.toUpperCase() !== "EUR" ? holding.fx_rate : null;
-                  const costEur =
-                    fxRate && totalCost ? totalCost * fxRate : null;
+                  const isForeignCurrency =
+                    holding.currency?.toUpperCase() !== DISPLAY_CURRENCY;
+                  const fxRate = isForeignCurrency ? holding.fx_rate : null;
+                  const costEur = fxRate && totalCost ? totalCost * fxRate : null;
                   const costPerShareEur =
                     fxRate && holding.cost_basis ? holding.cost_basis * fxRate : null;
+                  const feeEur = fxRate && feeValue ? feeValue * fxRate : null;
+                  const costPerSharePrimary =
+                    isForeignCurrency && costPerShareEur !== null && costPerShareEur !== undefined
+                      ? formatMoney(costPerShareEur, DISPLAY_CURRENCY)
+                      : formatMoney(holding.cost_basis, holding.currency);
+                  const costPerShareSecondary =
+                    isForeignCurrency && costPerShareEur !== null && costPerShareEur !== undefined
+                      ? formatMoney(holding.cost_basis, holding.currency)
+                      : null;
+                  const totalCostPrimary =
+                    isForeignCurrency && costEur !== null && costEur !== undefined
+                      ? formatMoney(costEur, DISPLAY_CURRENCY)
+                      : formatMoney(totalCost, holding.currency);
+                  const totalCostSecondary =
+                    isForeignCurrency && costEur !== null && costEur !== undefined
+                      ? formatMoney(totalCost, holding.currency)
+                      : null;
+                  const feePrimary =
+                    isForeignCurrency && feeEur !== null && feeEur !== undefined
+                      ? formatMoney(feeEur, DISPLAY_CURRENCY)
+                      : formatMoney(feeValue, holding.currency);
+                  const feeSecondary =
+                    isForeignCurrency && feeEur !== null && feeEur !== undefined
+                      ? formatMoney(feeValue, holding.currency)
+                      : null;
                   const annualized = computeAnnualizedReturn(gainPct, holding.acquired_at);
                   const instrumentName = holding.name || holding.symbol || holding.isin || "Unknown";
                   const instrumentHref = holding.href || "";
@@ -3424,18 +3449,19 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       <span data-label="Shares">{holding.shares.toFixed(2)}</span>
                       <span data-label="Cost / Total">
                       <span className="cost-values">
-                        {formatMoney(holding.cost_basis, holding.currency)}
-                        {fxRate && costPerShareEur !== null && costEur !== null && (
-                            <small>{" "}({formatMoney(costPerShareEur, "EUR")} )</small>
-                        )}
+                        {costPerSharePrimary}
+                        {costPerShareSecondary && <small> ({costPerShareSecondary})</small>}
                         </span>
                       <span className="total-cost">
-                          {formatMoney(totalCost, holding.currency)}
-                        {fxRate && costPerShareEur !== null && costEur !== null && (
-                            <small>{" "}({formatMoney(costEur, "EUR")})</small>
-                        )}
+                          {totalCostPrimary}
+                        {totalCostSecondary && <small> ({totalCostSecondary})</small>}
                         {feeValue > 0 && (
-                          <small> <br/>Fee: {formatMoney(feeValue, holding.currency)}</small>
+                          <small>
+                            {" "}
+                            <br />
+                            Fee: {feePrimary}
+                            {feeSecondary ? ` (${feeSecondary})` : ""}
+                          </small>
                         )}
                         </span>
 

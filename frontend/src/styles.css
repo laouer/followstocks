@@ -568,7 +568,7 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: 44px 1.2fr 0.9fr 1fr repeat(5, 1fr);
+  grid-template-columns: 44px 1.2fr 0.9fr 1fr 0.8fr 1.2fr repeat(3, 1fr);
   padding: 10px 12px;
   align-items: center;
   gap: 6px;
@@ -658,15 +658,6 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 .account-table .table-head,
 .account-table .table-row {
   grid-template-columns: 0.8fr 1fr 1fr 1fr 0.8fr 0.8fr 0.8fr 0.6fr;
-}
-
-.account-table .summary-row {
-  background: rgba(255, 255, 255, 0.04);
-  font-weight: 600;
-}
-
-.account-table .summary-row small {
-  font-weight: 400;
 }
 
 .account-actions {
