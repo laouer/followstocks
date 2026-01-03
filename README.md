@@ -40,7 +40,7 @@ pipenv install
 pipenv run uvicorn app.main:app --reload
 ```
 
-If you prefer plain venv/pip, `pip install -r requirements.txt` works too. API runs on `http://localhost:8000`.
+API runs on `http://localhost:8000`.
 
 ### Key endpoints
 - `GET /health` simple readiness check.
