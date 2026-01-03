@@ -233,6 +233,16 @@ const formatDate = (value?: string | null) => {
   return new Date(value).toLocaleDateString();
 };
 
+const getInitials = (email?: string | null) => {
+  const base = (email || "User").split("@")[0];
+  const parts = base.split(/[.\s_-]+/).filter(Boolean);
+  const initials = parts
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+  return initials || "U";
+};
+
 function App() {
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -280,6 +290,7 @@ function App() {
     }
     return undefined;
   }, [status.kind, status.message]);
+
   const [showSymbolModal, setShowSymbolModal] = useState(false);
   const [showAddHoldingModal, setShowAddHoldingModal] = useState(false);
   const [symbolSearchTerm, setSymbolSearchTerm] = useState("");
@@ -343,7 +354,22 @@ function App() {
     fx_rate: "",
   });
   const backupInputRef = useRef<HTMLInputElement | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [backupImportTarget, setBackupImportTarget] = useState<File | null>(null);
   const includeAllRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!isUserMenuOpen) return undefined;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!userMenuRef.current) return;
+      if (!userMenuRef.current.contains(event.target as Node)) {
+        setIsUserMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isUserMenuOpen]);
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
   const accounts = useMemo<Account[]>(() => portfolio?.accounts ?? [], [portfolio]);
@@ -366,6 +392,8 @@ function App() {
   const summary = portfolio?.summary;
   const totalCurrency = DISPLAY_CURRENCY;
   const isAuthed = Boolean(authToken);
+  const userDisplayEmail = currentUser?.email || "Signed in";
+  const userInitials = getInitials(currentUser?.email);
 
   const convertAmount = (
     value: number | null | undefined,
@@ -476,7 +504,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   }, [chartHoldings, fxRates, summary]);
 
   const selectedLiquidity = useMemo(() => {
-    if (!chartHoldings.length) return null;
+    if (!chartHoldings.length) {
+      if (!accounts.length) return null;
+      return accounts.reduce((sum, account) => sum + (account.liquidity || 0), 0);
+    }
     const accountIds = new Set<number>();
     chartHoldings.forEach((holding) => {
       const accountId = holding.account_id ?? holding.account?.id;
@@ -491,7 +522,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     );
   }, [accounts, chartHoldings]);
   const selectedCapitalContributed = useMemo(() => {
-    if (!chartHoldings.length) return null;
+    if (!chartHoldings.length) {
+      if (!accounts.length) return null;
+      return accounts.reduce(
+        (sum, account) => sum + (account.manual_invested || 0),
+        0
+      );
+    }
     const accountIds = new Set<number>();
     chartHoldings.forEach((holding) => {
       const accountId = holding.account_id ?? holding.account?.id;
@@ -1819,7 +1856,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       }
       setStatus({ kind: "idle" });
     } catch (err) {
-      const statusCode = (err as { response?: { status?: number } })?.response?.status;
+      const response = (err as { response?: { status?: number; data?: { detail?: string } } })
+        ?.response;
+      const statusCode = response?.status;
       if (statusCode === 401) {
         clearAuthToken();
         setAuthToken(null);
@@ -1829,8 +1868,20 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         setStatus({ kind: "idle" });
         return;
       }
+      if (!statusCode) {
+        clearAuthToken();
+        setAuthToken(null);
+        setCurrentUser(null);
+        setPortfolio(null);
+        setAuthStatus({
+          kind: "error",
+          message: "Unable to reach the server. Please check your connection and try again.",
+        });
+        setStatus({ kind: "idle" });
+        return;
+      }
       const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        response?.data?.detail ||
         "Unable to reach the API";
       setStatus({ kind: "error", message: detail });
     } finally {
@@ -2479,6 +2530,24 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   };
 
   const setHoldingFormFromHolding = (holding: HoldingStats) => {
+    const assetType = (holding.asset_type || "").toLowerCase();
+    const sector = (holding.sector || "").toLowerCase();
+    const industry = (holding.industry || "").toLowerCase();
+    const symbol = (holding.symbol || "").toLowerCase();
+    const likelyManual =
+      !holding.mic ||
+      assetType.includes("savings") ||
+      sector.includes("cash") ||
+      industry.includes("savings") ||
+      symbol.includes("livret") ||
+      symbol === "ldd" ||
+      (!assetType.includes("equity") && !assetType.includes("etf"));
+    const hasManualPrice =
+      holding.last_price !== null && holding.last_price !== undefined && likelyManual;
+    const manualLastPriceAtValue =
+      hasManualPrice && holding.last_snapshot_at
+        ? formatDateTimeLocal(new Date(holding.last_snapshot_at))
+        : formatDateTimeLocal();
     setHoldingForm({
       symbol: holding.symbol,
       shares: String(holding.shares),
@@ -2499,9 +2568,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       name: holding.name || "",
       href: holding.href || "",
       acquired_at: holding.acquired_at ? holding.acquired_at.slice(0, 10) : "",
-      manualPriceEnabled: false,
-      manualLastPrice: "",
-      manualLastPriceAt: formatDateTimeLocal(),
+      manualPriceEnabled: hasManualPrice,
+      manualLastPrice: hasManualPrice ? String(holding.last_price) : "",
+      manualLastPriceAt: manualLastPriceAtValue,
     });
   };
 
@@ -2609,9 +2678,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     }
   };
 
-  const handleImportBackup = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const importBackupFile = async (file: File) => {
     setStatus({
       kind: "loading",
       message: "Importing backup (this replaces your current data)...",
@@ -2635,9 +2702,21 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         "Failed to import backup";
       setStatus({ kind: "error", message: detail });
-    } finally {
-      event.target.value = "";
     }
+  };
+
+  const handleImportBackup = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setBackupImportTarget(file);
+    event.target.value = "";
+  };
+
+  const handleConfirmBackupImport = async () => {
+    if (!backupImportTarget) return;
+    const file = backupImportTarget;
+    setBackupImportTarget(null);
+    await importBackupFile(file);
   };
 
   const handleAccountSubmit = async (event: React.FormEvent) => {
@@ -2832,16 +2911,6 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 </p>
               </div>
               <div className="card-actions">
-                <div className={`hero-badge ${status.kind === "error" ? "is-error" : ""}`}>
-                  <span className="dot" />
-                  <div>
-                    <p>API
-                    <strong>
-                      {status.kind === "error" ? " Disconnected" : " Connected"}
-                    </strong>
-                    </p>
-                  </div>
-                </div>
                 <button
                   type="button"
                   className="button compact"
@@ -2915,125 +2984,63 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <p className="eyebrow">Portfolio summary</p>
                 </div>
                 <div className="card-actions">
-                  <span className="pill ghost">{currentUser?.email || "Signed in"}</span>
-                  <div className={`hero-badge ${status.kind === "error" ? "is-error" : ""}`}>
-                    <span className="dot" />
-                    <div>
-                      <p>API
-                      <strong>
-                        {status.kind === "error" ? " Disconnected" : " Connected"}
-                      </strong>
-                      </p>
-                    </div>
-                  </div>
                   {loading && <span className="pill ghost">Loading…</span>}
-                  {!loading && status.kind === "error" && (
-                    <span className="pill danger">API issue</span>
-                  )}
-                  <button
-                    type="button"
-                    className="button compact icon-only"
-                    title="Export JSON backup"
-                    aria-label="Export JSON backup"
-                    onClick={handleExportBackup}
-                  >
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                      <path
-                        d="M12 3v12"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M8 11l4 4l4-4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M4 20h16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    className="button compact icon-only"
-                    title="Import JSON backup"
-                    aria-label="Import JSON backup"
-                    onClick={() => backupInputRef.current?.click()}
-                  >
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                      <path
-                        d="M12 21V9"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M8 13l4-4l4 4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M4 4h16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </button>
-                  <input
-                    ref={backupInputRef}
-                    type="file"
-                    accept=".json,application/json"
-                    onChange={handleImportBackup}
-                    hidden
-                  />
-                  <button
-                    type="button"
-                    className="button compact icon-only"
-                    onClick={handleLogout}
-                    aria-label="Log out"
-                  >
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                      <path
-                        d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M10 17l5-5-5-5"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M15 12H4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </button>
+                  <div className="user-menu" ref={userMenuRef}>
+                    <button
+                      type="button"
+                      className="avatar-button"
+                      aria-label="Account menu"
+                      aria-haspopup="menu"
+                      aria-expanded={isUserMenuOpen}
+                      onClick={() => setIsUserMenuOpen((prev) => !prev)}
+                    >
+                      <span className="avatar-initials">{userInitials}</span>
+                    </button>
+                    {isUserMenuOpen && (
+                      <div className="user-menu-dropdown" role="menu">
+                        <div className="user-menu-header">
+                          <span className="user-menu-email">{userDisplayEmail}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            handleExportBackup();
+                          }}
+                        >
+                          Export Data
+                        </button>
+                        <button
+                          type="button"
+                          className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            backupInputRef.current?.click();
+                          }}
+                        >
+                          Import Data
+                        </button>
+                        <button
+                          type="button"
+                          className="user-menu-item danger"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            handleLogout();
+                          }}
+                        >
+                          Log out
+                        </button>
+                      </div>
+                    )}
+                    <input
+                      ref={backupInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      onChange={handleImportBackup}
+                      hidden
+                    />
+                  </div>
                 </div>
               </div>
               <div className="summary-content">
@@ -3042,15 +3049,15 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     <p>Capital contributed</p>
                     <h3>{displayMoney(selectedCapitalContributed, totalCurrency)}</h3>
                   </div>
-                  
-                  <div className="stat">
-                    <p>Position costs</p>
-                    <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
-                  </div>
                   <div className="stat">
                     <p>Cash available</p>
                     <h3>{displayMoney(selectedLiquidity, totalCurrency)}</h3>
                   </div>
+                  <div className="stat">
+                    <p>Position costs</p>
+                    <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
+                  </div>
+                  
                   <div className="stat">
                     <p>Portfolio Value</p>
                     <h3>{displayMoney(enhancedSummary.total_value, totalCurrency)}</h3>
@@ -3069,7 +3076,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     >
                       {displayMoneySigned(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
                       <span className="muted">
-                        ({formatPercentSigned(enhancedSummary.total_gain_pct)})
+                        <small> ({formatPercentSigned(enhancedSummary.total_gain_pct)}) </small>
                       </span>
                     </h3>
                   </div>
@@ -3455,8 +3462,8 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       })}
                       {accountsSummary && (
                         <div className="table-row summary-row">
-                          <span data-label="Name">Total</span>
-                          <span data-label="Type">—</span>
+                          <span data-label="Name" className="bold">TOTAL</span>
+                          <span data-label="Type"></span>
                           <span data-label="Capital contributed">
                             {formatMoney(accountsSummary.manualInvested, totalCurrency)}
                           </span>
@@ -3490,7 +3497,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                             {formatMoneySigned(accountsSummary.performance, totalCurrency)}
                             <small>{formatPercentSigned(accountsSummary.performanceRatio)}</small>
                           </span>
-                          <span data-label="Actions">—</span>
+                          <span data-label="Actions"></span>
                         </div>
                       )}
                     </div>
@@ -3872,7 +3879,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         setShowAccountModal(true);
                       }}
                     >
-                      New
+                      +
                     </button>
                   </div>
                   
@@ -4098,7 +4105,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     </small>
                   </label>
                 )}
-                <label className="inline-column" >
+                {holdingForm.currency === "EUR" && (
+                  <label className="inline-column" >  </label>)
+                }
+                <label className="inline-column" >  </label>
+                <label className="inline-column-grid" >
                   <input
                     type="checkbox"
                     checked={holdingForm.manualPriceEnabled}
@@ -4109,8 +4120,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       }))
                     }
                   />
-                  <span className="muted">Manual last price <br/> (use for non-standard instruments like FCPE)</span>
+                  <span className="muted">Manual last price. Use for non-standard instruments like FCPE, Livret A, LDD ...</span>
                 </label>
+                
                 {holdingForm.manualPriceEnabled && (
                   <>
                     <label>
@@ -5223,6 +5235,61 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             </div>
           );
         })()}
+      {backupImportTarget && (
+        <div
+          className="symbol-modal-backdrop"
+          onClick={() => setBackupImportTarget(null)}
+        >
+          <div
+            className="symbol-modal confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="backup-import-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">Backup</p>
+                <h3 id="backup-import-title">Replace your data?</h3>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                onClick={() => setBackupImportTarget(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="confirm-modal-body">
+              <p className="confirm-warning">
+                Importing this backup will replace all your current data (accounts, holdings,
+                transactions, and cash). This action is irreversible.
+              </p>
+              <div className="confirm-details">
+                <span className="pill ghost">File {backupImportTarget.name}</span>
+              </div>
+            </div>
+            <div className="symbol-modal-footer">
+              <div className="footer-right">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => setBackupImportTarget(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button danger"
+                  type="button"
+                  onClick={handleConfirmBackupImport}
+                >
+                  Import backup
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {cashTargetAccount && (
         <div className="symbol-modal-backdrop" onClick={closeCashModal}>
           <div
