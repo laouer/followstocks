@@ -131,6 +131,41 @@ def delete_account(db: Session, account: models.Account) -> None:
     db.commit()
 
 
+def apply_cash_movement(
+    db: Session,
+    account: models.Account,
+    user_id: int,
+    payload: schemas.CashMovementRequest,
+) -> models.Account:
+    amount = payload.amount
+    delta = amount if payload.direction == "ADD" else -amount
+    new_liquidity = (account.liquidity or 0.0) + delta
+    if new_liquidity < 0:
+        raise ValueError("Cash available cannot go below zero")
+    account.liquidity = new_liquidity
+    if payload.reason.strip().lower() in {"contribution", "withdrawal"}:
+        new_manual_invested = (account.manual_invested or 0.0) + delta
+        if new_manual_invested < 0:
+            if abs(new_manual_invested) <= 1e-6:
+                new_manual_invested = 0.0
+            else:
+                raise ValueError("Capital contributed cannot go below zero")
+        account.manual_invested = new_manual_invested
+    account.updated_at = datetime.utcnow()
+    transaction = models.CashTransaction(
+        user_id=user_id,
+        account_id=account.id,
+        amount=amount,
+        direction=payload.direction,
+        reason=payload.reason,
+    )
+    db.add(transaction)
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
 def get_holding(db: Session, user_id: int, holding_id: int) -> Optional[models.Holding]:
     return (
         db.query(models.Holding)

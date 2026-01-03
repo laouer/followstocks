@@ -152,7 +152,7 @@ body {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 0.8fr));
   gap: 16px;
   margin-top: 12px;
 }
@@ -359,6 +359,29 @@ body {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.chart-header-actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 5;
+}
+
+.chart-header-actions .chart-group-label {
+  white-space: nowrap;
+}
+
+.chart-header-actions .chart-select {
+  padding: 6px 8px;
+}
+
+.chart-header-actions .chart-toggle,
+.chart-header-actions .zoom-button {
+  position: static;
 }
 
 .chart-wrapper {
@@ -568,7 +591,7 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: 44px 1.2fr 0.9fr 1fr 0.8fr 1.2fr repeat(3, 1fr);
+  grid-template-columns: 44px 1.2fr 0.9fr 1fr 0.8fr 1.2fr repeat(3, 1fr) 0.6fr;
   padding: 10px 12px;
   align-items: center;
   gap: 6px;
@@ -665,6 +688,7 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
   align-items: center;
   gap: 6px;
   flex-direction: row !important;
+  flex-wrap: wrap;
 }
 
 .instrument-cell {
@@ -688,6 +712,11 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 
 .instrument-actions.column {
   flex-direction: row;
+}
+
+.holding-actions {
+  display: flex;
+  align-items: center;
 }
 
 .name-link {
@@ -821,6 +850,7 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
+  width: 100%;
 }
 
 .symbol-input-wrap {
@@ -830,6 +860,9 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 .combo {
   position: relative;
   z-index: 2;
+}
+g.highcharts-axis-labels.highcharts-xaxis-labels > text {
+  fill: var(--text)!important;
 }
 
 .combo-menu {
@@ -965,7 +998,7 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 
 .symbol-modal-body {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 10px;
 }
 
@@ -993,7 +1026,35 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 }
 
 .account-modal-body {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.cash-modal-body {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.holding-modal-body {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.holding-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.holding-detail strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.holding-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .symbol-modal-body input {

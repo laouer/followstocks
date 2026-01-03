@@ -336,10 +336,122 @@ class Transaction(TransactionBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-class HoldingsImportResult(BaseModel):
-    created: int
-    skipped: int
-    errors: List[str]
+class CashMovementRequest(BaseModel):
+    amount: float = Field(..., gt=0, description="Cash amount in account currency")
+    direction: Literal["ADD", "WITHDRAW"] = Field(..., description="ADD or WITHDRAW")
+    reason: str = Field(..., min_length=1, description="Reason for the cash movement")
+
+    @field_validator("direction", mode="before")
+    @classmethod
+    def normalize_direction(cls, v: str) -> str:
+        upper = str(v).strip().upper()
+        if upper not in {"ADD", "WITHDRAW"}:
+            raise ValueError("Direction must be ADD or WITHDRAW")
+        return upper
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason(cls, v: Optional[str]) -> str:
+        if v is None:
+            raise ValueError("Reason is required")
+        reason = str(v).strip()
+        if not reason:
+            raise ValueError("Reason is required")
+        return reason
+
+
+class CashTransaction(BaseModel):
+    id: int
+    account_id: int
+    amount: float
+    direction: Literal["ADD", "WITHDRAW"]
+    reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BackupAccount(BaseModel):
+    id: int
+    name: str
+    account_type: Optional[str] = None
+    liquidity: float
+    manual_invested: float
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BackupHolding(BaseModel):
+    id: int
+    account_id: int
+    symbol: str
+    shares: float
+    cost_basis: float
+    acquisition_fee_value: float
+    fx_rate: Optional[float] = None
+    currency: str
+    last_price: Optional[float] = None
+    last_snapshot_at: Optional[datetime] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    asset_type: Optional[str] = None
+    isin: Optional[str] = None
+    acquired_at: Optional[date] = None
+    mic: Optional[str] = None
+    name: Optional[str] = None
+    href: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BackupTransaction(BaseModel):
+    id: int
+    account_id: int
+    symbol: str
+    side: str
+    shares: float
+    price: float
+    fee_value: float
+    currency: CurrencyCode
+    executed_at: Optional[date] = None
+    realized_gain: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BackupCashTransaction(BaseModel):
+    id: int
+    account_id: int
+    amount: float
+    direction: Literal["ADD", "WITHDRAW"]
+    reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BackupPayload(BaseModel):
+    version: int = 1
+    exported_at: datetime
+    accounts: List[BackupAccount]
+    holdings: List[BackupHolding]
+    transactions: List[BackupTransaction]
+    cash_transactions: List[BackupCashTransaction]
+
+
+class BackupImportResult(BaseModel):
+    accounts: int
+    holdings: int
+    transactions: int
+    cash_transactions: int
 
 
 class Cac40Item(BaseModel):

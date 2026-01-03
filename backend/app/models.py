@@ -19,6 +19,9 @@ class User(Base):
     holdings = relationship("Holding", back_populates="user", cascade="all, delete-orphan")
     accounts = relationship("Account", back_populates="user", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
+    cash_transactions = relationship(
+        "CashTransaction", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Account(Base):
@@ -36,6 +39,9 @@ class Account(Base):
     user = relationship("User", back_populates="accounts")
     holdings = relationship("Holding", back_populates="account", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="account", cascade="all, delete-orphan")
+    cash_transactions = relationship(
+        "CashTransaction", back_populates="account", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (UniqueConstraint("user_id", "name", name="uix_account_user_name"),)
 
@@ -89,4 +95,19 @@ class Transaction(Base):
     user = relationship("User", back_populates="transactions")
     account = relationship("Account", back_populates="transactions")
 
+
+class CashTransaction(Base):
+    __tablename__ = "cash_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    direction = Column(String, nullable=False)  # ADD or WITHDRAW
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="cash_transactions")
+    account = relationship("Account", back_populates="cash_transactions")
 

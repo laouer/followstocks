@@ -15,10 +15,11 @@ import {
   clearAuthToken,
   getStoredAuthToken,
   fetchPortfolio,
-  exportHoldingsCsv,
-  importHoldingsCsv,
+  exportBackupJson,
+  importBackupJson,
   createAccount,
   updateAccount,
+  moveAccountCash,
   deleteAccount,
   createHolding,
   updateHolding,
@@ -86,6 +87,7 @@ type AuthMode = "login" | "register";
 type ChartGroupBy = "holding" | "account" | "asset_type" | "sector" | "industry";
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const BAR_VALUE_LABEL_ROTATION = -45;
 const ALLOCATION_COLORS = [
   "#22c55e",
   "#0ea5e9",
@@ -145,6 +147,29 @@ const CHART_GROUP_OPTIONS: Array<{ value: ChartGroupBy; label: string }> = [
   { value: "sector", label: "Sector" },
   { value: "industry", label: "Industry" },
 ];
+const CASH_REASON_OPTIONS = {
+  add: [
+    "Contribution",
+    "Dividend",
+    "Interest",
+    "Refund",
+    "Transfer in",
+    "Correction",
+    "Other",
+  ],
+  withdraw: [
+    "Withdrawal",
+    "Fee",
+    "Tax",
+    "Transfer out",
+    "Correction",
+    "Other",
+  ],
+} as const;
+const CASH_REASON_DEFAULT = {
+  add: "Contribution",
+  withdraw: "Withdrawal",
+} as const;
 const LOSS_COLOR = "#fb7185";
 
 const formatPercent = (value?: number | null) => {
@@ -259,7 +284,7 @@ function App() {
   const DISPLAY_CURRENCY = "EUR";
   const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | null>(null);
   const [allocationChartType, setAllocationChartType] = useState<"donut" | "bar">("donut");
-  const [plChartType, setPlChartType] = useState<"donut" | "bar">("donut");
+  const [plChartType, setPlChartType] = useState<"donut" | "bar">("bar");
   const [chartGroupBy, setChartGroupBy] = useState<ChartGroupBy>("holding");
   const [excludedHoldings, setExcludedHoldings] = useState<Set<number>>(new Set());
   const [accountForm, setAccountForm] = useState({
@@ -273,6 +298,24 @@ function App() {
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [showAccounts, setShowAccounts] = useState(false);
   const [accountDeleteTarget, setAccountDeleteTarget] = useState<Account | null>(null);
+  const [cashTargetAccount, setCashTargetAccount] = useState<Account | null>(null);
+  const [holdingActionsTarget, setHoldingActionsTarget] = useState<HoldingStats | null>(null);
+  const [holdingConfirmTarget, setHoldingConfirmTarget] = useState<{
+    holding: HoldingStats;
+    mode: "delete" | "refund";
+  } | null>(null);
+  const [holdingActionsReturnId, setHoldingActionsReturnId] = useState<number | null>(null);
+  const [cashForm, setCashForm] = useState<{
+    amount: string;
+    mode: "add" | "withdraw";
+    reasonPreset: string;
+    reasonCustom: string;
+  }>({
+    amount: "",
+    mode: "add",
+    reasonPreset: CASH_REASON_DEFAULT.add,
+    reasonCustom: "",
+  });
   const [buyHoldingTarget, setBuyHoldingTarget] = useState<HoldingStats | null>(null);
   const [buyForm, setBuyForm] = useState({
     shares: "",
@@ -289,7 +332,7 @@ function App() {
     executed_at: formatDateInput(),
     fx_rate: "",
   });
-  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const backupInputRef = useRef<HTMLInputElement | null>(null);
   const includeAllRef = useRef<HTMLInputElement | null>(null);
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
@@ -437,6 +480,29 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       0
     );
   }, [accounts, chartHoldings]);
+  const selectedCapitalContributed = useMemo(() => {
+    if (!chartHoldings.length) return null;
+    const accountIds = new Set<number>();
+    chartHoldings.forEach((holding) => {
+      const accountId = holding.account_id ?? holding.account?.id;
+      if (accountId) {
+        accountIds.add(accountId);
+      }
+    });
+    if (!accountIds.size) return null;
+    return accounts.reduce(
+      (sum, account) =>
+        accountIds.has(account.id) ? sum + (account.manual_invested || 0) : sum,
+      0
+    );
+  }, [accounts, chartHoldings]);
+  const cashPreview = useMemo(() => {
+    if (!cashTargetAccount) return null;
+    const amount = cashForm.amount === "" ? null : Number(cashForm.amount);
+    if (amount === null || Number.isNaN(amount) || amount <= 0) return null;
+    const delta = cashForm.mode === "add" ? amount : -amount;
+    return (cashTargetAccount.liquidity || 0) + delta;
+  }, [cashForm.amount, cashForm.mode, cashTargetAccount]);
 
   const allocationData = useMemo(() => {
     const resolveGroupLabel = (holding: HoldingStats) => {
@@ -517,7 +583,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         detailLabel: entry.lots.length === 1 ? "lot" : "lots",
       }));
 
-      const drilldownSeries = Array.from(grouped.values())
+      const drilldownSeriesPie = Array.from(grouped.values())
         .filter((entry) => entry.lots.length > 1)
         .map(
           (entry) =>
@@ -530,12 +596,31 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 y: Number(lot.y.toFixed(2)),
                 currency: totalCurrency,
                 displayName: lot.displayName,
+                rawValue: lot.y,
+              })),
+            }) as Highcharts.SeriesOptionsType
+        );
+      const drilldownSeriesBar = Array.from(grouped.values())
+        .filter((entry) => entry.lots.length > 1)
+        .map(
+          (entry) =>
+            ({
+              type: "bar",
+              id: `allocation-${entry.symbol}`,
+              name: entry.label,
+              data: entry.lots.map((lot, idx) => ({
+                name: lot.name,
+                y: Number(lot.y.toFixed(2)),
+                color: ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+                currency: totalCurrency,
+                displayName: lot.displayName,
+                rawValue: lot.y,
               })),
             }) as Highcharts.SeriesOptionsType
         );
 
       const total = points.reduce((sum, p) => sum + p.y, 0);
-      return { points, total, drilldownSeries };
+      return { points, total, drilldownSeriesPie, drilldownSeriesBar };
     }
 
     const grouped = new Map<
@@ -596,7 +681,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         detailLabel: holdingCount === 1 ? "holding" : "holdings",
       };
     });
-    const drilldownSeries = Array.from(grouped.values()).map(
+    const drilldownSeriesPie = Array.from(grouped.values()).map(
       (entry) =>
         ({
           type: "pie",
@@ -607,11 +692,28 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             y: Number(item.y.toFixed(2)),
             currency: totalCurrency,
             displayName: item.displayName,
+            rawValue: item.y,
+          })),
+        }) as Highcharts.SeriesOptionsType
+    );
+    const drilldownSeriesBar = Array.from(grouped.values()).map(
+      (entry) =>
+        ({
+          type: "bar",
+          id: `allocation-group-${slugify(entry.label)}`,
+          name: entry.label,
+          data: Array.from(entry.holdings.values()).map((item, idx) => ({
+            name: item.name,
+            y: Number(item.y.toFixed(2)),
+            color: ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
+            currency: totalCurrency,
+            displayName: item.displayName,
+            rawValue: item.y,
           })),
         }) as Highcharts.SeriesOptionsType
     );
     const total = points.reduce((sum, p) => sum + p.y, 0);
-    return { points, total, drilldownSeries };
+    return { points, total, drilldownSeriesPie, drilldownSeriesBar };
   }, [chartGroupBy, chartHoldings, fxRates, totalCurrency]);
 
   const plData = useMemo(() => {
@@ -957,7 +1059,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         },
       },
       drilldown: {
-        series: allocationData.drilldownSeries,
+        series: allocationData.drilldownSeriesPie,
         drillUpButton: {
           theme: {
             fill: "rgba(15, 23, 42, 0.85)",
@@ -1065,6 +1167,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           currency: DISPLAY_CURRENCY,
           displayName: point.label,
           share: allocationData.total > 0 ? point.y / allocationData.total : 0,
+          drilldown: point.drilldown,
           detailCount: point.detailCount,
           detailLabel: point.detailLabel,
         }))
@@ -1078,7 +1181,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       },
       title: { text: null },
       xAxis: {
-        categories: data.map((point) => point.name || ""),
+        type: "category",
         lineColor: "rgba(255, 255, 255, 0.15)",
         tickColor: "rgba(255, 255, 255, 0.15)",
         labels: {
@@ -1090,6 +1193,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         gridLineColor: "rgba(255, 255, 255, 0.08)",
         labels: {
           style: { color: "#9fb0d4", fontSize: "11px" },
+          rotation: BAR_VALUE_LABEL_ROTATION,
           formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
             return formatMoney(this.value as number, totalCurrency);
           },
@@ -1147,6 +1251,17 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       },
       legend: { enabled: false },
       credits: { enabled: false },
+      drilldown: {
+        series: allocationData.drilldownSeriesBar,
+        drillUpButton: {
+          theme: {
+            fill: "rgba(15, 23, 42, 0.85)",
+            stroke: "rgba(255, 255, 255, 0.12)",
+            r: 8,
+            style: { color: "#e9ecf4" },
+          },
+        },
+      },
       series: [
         {
           type: "bar",
@@ -1159,6 +1274,8 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
 
   const plDonutOptions = useMemo<Highcharts.Options>(() => {
     const hasData = plData.total > 0 && plData.points.length > 0;
+    const buildPlTitle = (value?: number | null) =>
+      `<div class="donut-center"><strong>${formatMoneySigned(value, totalCurrency)}</strong></div>`;
     const data = hasData
       ? plData.points.map((p, idx) => ({
           name: p.name,
@@ -1188,6 +1305,23 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         type: "pie",
         backgroundColor: "transparent",
         height: 300,
+        events: {
+          drilldown: function (this: Highcharts.Chart, event: Highcharts.DrilldownEventObject) {
+            const seriesOptions = event.seriesOptions as Highcharts.SeriesOptionsType | undefined;
+            if (!seriesOptions || !("data" in seriesOptions)) return;
+            const seriesData =
+              (seriesOptions as { data?: Array<{ rawGain?: number; y?: number }> }).data || [];
+            const total = seriesData.reduce((sum, point) => {
+              if (typeof point.rawGain === "number") return sum + point.rawGain;
+              if (typeof point.y === "number") return sum + point.y;
+              return sum;
+            }, 0);
+            this.setTitle({ text: buildPlTitle(total) });
+          },
+          drillup: function (this: Highcharts.Chart) {
+            this.setTitle({ text: buildPlTitle(chartGainAbs) });
+          },
+        },
       },
       drilldown: {
         series: plData.drilldownSeriesPie,
@@ -1205,7 +1339,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         align: "center",
         verticalAlign: "middle",
         floating: true,
-        text: `<div class="donut-center"><strong>${formatMoneySigned(chartGainAbs, totalCurrency)}</strong></div>`,
+        text: buildPlTitle(chartGainAbs),
       },
       tooltip: {
         useHTML: true,
@@ -1323,7 +1457,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       },
       title: { text: null },
       xAxis: {
-        categories: data.map((point) => point.name || ""),
+        type: "category",
         lineColor: "rgba(255, 255, 255, 0.15)",
         tickColor: "rgba(255, 255, 255, 0.15)",
         labels: {
@@ -1335,6 +1469,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         gridLineColor: "rgba(255, 255, 255, 0.08)",
         labels: {
           style: { color: "#9fb0d4", fontSize: "11px" },
+          rotation: BAR_VALUE_LABEL_ROTATION,
           formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
             return formatMoneySigned(this.value as number, totalCurrency);
           },
@@ -2184,8 +2319,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       }
       await loadPortfolio();
       setStatus({ kind: "success", message: "Holding removed" });
+      return true;
     } catch (err) {
       setStatus({ kind: "error", message: "Failed to delete holding" });
+      return false;
     } finally {
       setDeletingId(null);
     }
@@ -2219,15 +2356,36 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         kind: "success",
         message: `Holding removed. Refunded ${formatMoney(refunded, holding.currency)}.`,
       });
+      return true;
     } catch (err) {
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         "Failed to remove and refund holding";
       setStatus({ kind: "error", message: detail });
+      return false;
     } finally {
       setDeletingId(null);
     }
   };
+
+  useEffect(() => {
+    if (!holdingActionsReturnId) return;
+    const actionModalOpen =
+      showAddHoldingModal || Boolean(buyHoldingTarget) || Boolean(sellHoldingTarget) || Boolean(holdingConfirmTarget);
+    if (actionModalOpen) return;
+    const latest = holdings.find((item) => item.id === holdingActionsReturnId);
+    if (latest) {
+      setHoldingActionsTarget(latest);
+    }
+    setHoldingActionsReturnId(null);
+  }, [
+    holdingActionsReturnId,
+    showAddHoldingModal,
+    buyHoldingTarget,
+    sellHoldingTarget,
+    holdingConfirmTarget,
+    holdings,
+  ]);
 
   const openBuyModal = (holding: HoldingStats) => {
     const defaultPrice =
@@ -2415,45 +2573,52 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     }
   };
 
-  const handleExportHoldings = async () => {
-    setStatus({ kind: "loading", message: "Preparing CSV export..." });
+  const handleExportBackup = async () => {
+    setStatus({ kind: "loading", message: "Preparing JSON backup..." });
     try {
-      const res = await exportHoldingsCsv();
-      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8;" });
+      const res = await exportBackupJson();
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], {
+        type: "application/json;charset=utf-8;",
+      });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `holdings-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.download = `backup-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      setStatus({ kind: "success", message: "Holdings exported." });
+      setStatus({ kind: "success", message: "Backup exported." });
     } catch (err) {
-      setStatus({ kind: "error", message: "Failed to export holdings" });
+      setStatus({ kind: "error", message: "Failed to export backup" });
     }
   };
 
-  const handleImportHoldings = async (event: ChangeEvent<HTMLInputElement>) => {
+  const handleImportBackup = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setStatus({ kind: "loading", message: "Importing holdings..." });
+    setStatus({
+      kind: "loading",
+      message: "Importing backup (this replaces your current data)...",
+    });
     try {
-      const res = await importHoldingsCsv(file);
+      const res = await importBackupJson(file);
       await loadPortfolio();
-      const { created, skipped, errors } = res.data;
-      const createdLabel = created === 1 ? "holding" : "holdings";
-      const skippedLabel = skipped === 1 ? "holding" : "holdings";
-      const skippedMessage = skipped ? ` Skipped ${skipped} ${skippedLabel}.` : "";
-      const errorMessage = errors?.length ? ` First error: ${errors[0]}` : "";
+      const { accounts, holdings, transactions, cash_transactions } = res.data;
+      const parts = [
+        `${accounts} account${accounts === 1 ? "" : "s"}`,
+        `${holdings} holding${holdings === 1 ? "" : "s"}`,
+        `${transactions} transaction${transactions === 1 ? "" : "s"}`,
+        `${cash_transactions} cash transaction${cash_transactions === 1 ? "" : "s"}`,
+      ];
       setStatus({
-        kind: created > 0 ? "success" : "error",
-        message: `Imported ${created} ${createdLabel}.${skippedMessage}${errorMessage}`,
+        kind: "success",
+        message: `Imported ${parts.join(", ")}.`,
       });
     } catch (err) {
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        "Failed to import holdings";
+        "Failed to import backup";
       setStatus({ kind: "error", message: detail });
     } finally {
       event.target.value = "";
@@ -2469,13 +2634,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     const liquidity =
       accountForm.liquidity === "" ? 0 : Number(accountForm.liquidity);
     if (Number.isNaN(liquidity) || liquidity < 0) {
-      setStatus({ kind: "error", message: "Liquidity must be a positive number" });
+      setStatus({ kind: "error", message: "Cash available must be a positive number" });
       return;
     }
     const manualInvested =
       accountForm.manual_invested === "" ? 0 : Number(accountForm.manual_invested);
     if (Number.isNaN(manualInvested) || manualInvested < 0) {
-      setStatus({ kind: "error", message: "Manual invested must be a positive number" });
+      setStatus({ kind: "error", message: "Capital contributed must be a positive number" });
       return;
     }
     const createdAt = accountForm.created_at?.trim();
@@ -2540,6 +2705,93 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         "Failed to delete account";
       setStatus({ kind: "error", message: detail });
       return false;
+    }
+  };
+
+  const openCashModal = (account: Account, mode: "add" | "withdraw") => {
+    setCashTargetAccount(account);
+    const reasonPreset = CASH_REASON_DEFAULT[mode];
+    setCashForm({ amount: "", mode, reasonPreset, reasonCustom: "" });
+  };
+
+  const closeCashModal = () => {
+    setCashTargetAccount(null);
+    setCashForm({
+      amount: "",
+      mode: "add",
+      reasonPreset: CASH_REASON_DEFAULT.add,
+      reasonCustom: "",
+    });
+  };
+
+  const closeHoldingActions = () => {
+    setHoldingActionsTarget(null);
+    setHoldingActionsReturnId(null);
+  };
+
+  const openHoldingConfirm = (holding: HoldingStats, mode: "delete" | "refund") => {
+    setHoldingActionsReturnId(holding.id);
+    setHoldingActionsTarget(null);
+    setHoldingConfirmTarget({ holding, mode });
+  };
+
+  const queueHoldingReturn = (holding: HoldingStats) => {
+    setHoldingActionsReturnId(holding.id);
+    setHoldingActionsTarget(null);
+  };
+
+  const handleCashMovement = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!cashTargetAccount) return;
+    const amount = cashForm.amount === "" ? 0 : Number(cashForm.amount);
+    if (Number.isNaN(amount) || amount <= 0) {
+      setStatus({ kind: "error", message: "Cash amount must be a positive number" });
+      return;
+    }
+    const reason =
+      cashForm.reasonPreset === "Other"
+        ? cashForm.reasonCustom.trim()
+        : cashForm.reasonPreset.trim();
+    if (!reason) {
+      setStatus({ kind: "error", message: "Reason is required" });
+      return;
+    }
+    const reasonKey = reason.toLowerCase();
+    const delta = cashForm.mode === "add" ? amount : -amount;
+    const newLiquidity = (cashTargetAccount.liquidity || 0) + delta;
+    if (newLiquidity < 0) {
+      setStatus({ kind: "error", message: "Cash available cannot go below zero" });
+      return;
+    }
+    const affectsCapital = reasonKey === "contribution" || reasonKey === "withdrawal";
+    if (affectsCapital) {
+      const newCapital = (cashTargetAccount.manual_invested || 0) + delta;
+      if (newCapital < 0) {
+        setStatus({ kind: "error", message: "Capital contributed cannot go below zero" });
+        return;
+      }
+    }
+    setStatus({
+      kind: "loading",
+      message: cashForm.mode === "add" ? "Adding cash..." : "Withdrawing cash...",
+    });
+    try {
+      await moveAccountCash(cashTargetAccount.id, {
+        amount,
+        direction: cashForm.mode === "add" ? "ADD" : "WITHDRAW",
+        reason,
+      });
+      await loadPortfolio();
+      setStatus({
+        kind: "success",
+        message: cashForm.mode === "add" ? "Cash added" : "Cash withdrawn",
+      });
+      closeCashModal();
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to update cash";
+      setStatus({ kind: "error", message: detail });
     }
   };
 
@@ -2655,24 +2907,81 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       </p>
                     </div>
                   </div>
-                  <label className="chart-group-label">
-                    Group by
-                    <select
-                      className="chart-select"
-                      value={chartGroupBy}
-                      onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
-                    >
-                      {CHART_GROUP_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
                   {loading && <span className="pill ghost">Loading…</span>}
                   {!loading && status.kind === "error" && (
                     <span className="pill danger">API issue</span>
                   )}
+                  <button
+                    type="button"
+                    className="button compact icon-only"
+                    title="Export JSON backup"
+                    aria-label="Export JSON backup"
+                    onClick={handleExportBackup}
+                  >
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path
+                        d="M12 3v12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                      />
+                      <path
+                        d="M8 11l4 4l4-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M4 20h16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="button compact icon-only"
+                    title="Import JSON backup"
+                    aria-label="Import JSON backup"
+                    onClick={() => backupInputRef.current?.click()}
+                  >
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path
+                        d="M12 21V9"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                      />
+                      <path
+                        d="M8 13l4-4l4 4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <path
+                        d="M4 4h16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </button>
+                  <input
+                    ref={backupInputRef}
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={handleImportBackup}
+                    hidden
+                  />
                   <button
                     type="button"
                     className="button compact icon-only"
@@ -2711,11 +3020,20 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
               <div className="summary-content">
                 <div className="summary-grid">
                   <div className="stat">
-                    <p>Invested</p>
+                    <p>Capital contributed</p>
+                    <h3>{displayMoney(selectedCapitalContributed, totalCurrency)}</h3>
+                  </div>
+                  
+                  <div className="stat">
+                    <p>Position costs</p>
                     <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
                   </div>
                   <div className="stat">
-                    <p>Value</p>
+                    <p>Cash available</p>
+                    <h3>{displayMoney(selectedLiquidity, totalCurrency)}</h3>
+                  </div>
+                  <div className="stat">
+                    <p>Portfolio Value</p>
                     <h3>{displayMoney(enhancedSummary.total_value, totalCurrency)}</h3>
                   </div>
                   <div className="stat">
@@ -2736,10 +3054,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       </span>
                     </h3>
                   </div>
-                  <div className="stat">
-                    <p>Liquidity</p>
-                    <h3>{displayMoney(selectedLiquidity, totalCurrency)}</h3>
-                  </div>
+                  
                 </div>
                   <div className="summary-charts">
                     <div className="summary-chart">
@@ -2756,40 +3071,56 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         <p className="muted helper">
                           Based on latest prices · Grouped by {chartGroupLabel.toLowerCase()}
                         </p>
-                        <button
-                          type="button"
-                          className="icon-button compact chart-toggle"
-                          onClick={() =>
-                            setAllocationChartType((prev) => (prev === "donut" ? "bar" : "donut"))
-                          }
-                          aria-label={allocationToggleLabel}
-                          title={allocationToggleLabel}
-                          aria-pressed={allocationChartType === "bar"}
-                        >
-                          {allocationChartType === "donut" ? (
-                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                              <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
-                              <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
-                              <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
-                            </svg>
-                          ) : (
-                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                              <path
-                                d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
-                                fill="currentColor"
-                                fillRule="evenodd"
-                              />
-                            </svg>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button compact zoom-button"
-                          onClick={() => setZoomedChart("allocation")}
-                          aria-label="Expand allocation chart"
-                        >
-                          🔍
-                        </button>
+                        <div className="chart-header-actions">
+                          <label className="chart-group-label">
+                            Group by
+                            <select
+                              className="chart-select"
+                              value={chartGroupBy}
+                              onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                            >
+                              {CHART_GROUP_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            className="icon-button compact chart-toggle"
+                            onClick={() =>
+                              setAllocationChartType((prev) => (prev === "donut" ? "bar" : "donut"))
+                            }
+                            aria-label={allocationToggleLabel}
+                            title={allocationToggleLabel}
+                            aria-pressed={allocationChartType === "bar"}
+                          >
+                            {allocationChartType === "donut" ? (
+                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                                <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                                <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                              </svg>
+                            ) : (
+                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                <path
+                                  d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                                  fill="currentColor"
+                                  fillRule="evenodd"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-button compact zoom-button"
+                            onClick={() => setZoomedChart("allocation")}
+                            aria-label="Expand allocation chart"
+                          >
+                            🔍
+                          </button>
+                        </div>
                       </div>
                       <div className="chart-wrapper">
                         <HighchartsReact
@@ -2816,40 +3147,56 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         <p className="muted helper">
                           Absolute gains vs losses by {chartGroupLabel.toLowerCase()}
                         </p>
-                        <button
-                          type="button"
-                          className="icon-button compact chart-toggle"
-                          onClick={() =>
-                            setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))
-                          }
-                          aria-label={plToggleLabel}
-                          title={plToggleLabel}
-                          aria-pressed={plChartType === "bar"}
-                        >
-                          {plChartType === "donut" ? (
-                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                              <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
-                              <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
-                              <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
-                            </svg>
-                          ) : (
-                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                              <path
-                                d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
-                                fill="currentColor"
-                                fillRule="evenodd"
-                              />
-                            </svg>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button compact zoom-button"
-                          onClick={() => setZoomedChart("pl")}
-                          aria-label="Expand P/L chart"
-                        >
-                          🔍
-                        </button>
+                        <div className="chart-header-actions">
+                          <label className="chart-group-label">
+                            Group by
+                            <select
+                              className="chart-select"
+                              value={chartGroupBy}
+                              onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                            >
+                              {CHART_GROUP_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            className="icon-button compact chart-toggle"
+                            onClick={() =>
+                              setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))
+                            }
+                            aria-label={plToggleLabel}
+                            title={plToggleLabel}
+                            aria-pressed={plChartType === "bar"}
+                          >
+                            {plChartType === "donut" ? (
+                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                                <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                                <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                              </svg>
+                            ) : (
+                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                <path
+                                  d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                                  fill="currentColor"
+                                  fillRule="evenodd"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-button compact zoom-button"
+                            onClick={() => setZoomedChart("pl")}
+                            aria-label="Expand P/L chart"
+                          >
+                            🔍
+                          </button>
+                        </div>
                       </div>
                       <div className="chart-wrapper">
                         <HighchartsReact highcharts={Highcharts} options={plChartOptions} />
@@ -2955,10 +3302,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       <button
                         type="button"
                         className="table-sort"
-                        title="Manually invested amount."
+                        title="Capital contributed."
                         onClick={() => handleAccountSort("manual_invested")}
                       >
-                        Manual invested {renderAccountSortIcon("manual_invested")}
+                        Capital contributed {renderAccountSortIcon("manual_invested")}
                       </button>
                       <button
                         type="button"
@@ -2971,10 +3318,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       <button
                         type="button"
                         className="table-sort"
-                        title="Current liquidity available."
+                        title="Current cash available."
                         onClick={() => handleAccountSort("liquidity")}
                       >
-                        Liquidity {renderAccountSortIcon("liquidity")}
+                        Cash available {renderAccountSortIcon("liquidity")}
                       </button>
                       <button
                         type="button"
@@ -2987,7 +3334,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       <button
                         type="button"
                         className="table-sort"
-                        title="Total performance vs manual invested."
+                        title="Total performance vs capital contributed."
                         onClick={() => handleAccountSort("performance")}
                       >
                         Performance {renderAccountSortIcon("performance")}
@@ -3010,7 +3357,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                           <div className="table-row" key={account.id}>
                             <span data-label="Name">{account.name}</span>
                             <span data-label="Type">{account.account_type || "—"}</span>
-                            <span data-label="Manual invested">
+                            <span data-label="Capital contributed">
                               {formatMoney(manualInvested, totalCurrency)}
                             </span>
                             <span data-label="Holdings allocation">
@@ -3023,7 +3370,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                                 {holdingsCount} holding{holdingsCount === 1 ? "" : "s"}
                               </small>
                             </span>
-                            <span data-label="Liquidity">
+                            <span data-label="Cash available">
                               {formatMoney(account.liquidity, totalCurrency)}
                             </span>
                             <span data-label="Total">
@@ -3039,6 +3386,24 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                               <small>{formatPercentSigned(performanceRatio)}</small>
                             </span>
                             <span className="account-actions" data-label="Actions">
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label={`Add cash to ${account.name}`}
+                                title="Add cash"
+                                onClick={() => openCashModal(account, "add")}
+                              >
+                                ➕
+                              </button>
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label={`Withdraw cash from ${account.name}`}
+                                title="Withdraw cash"
+                                onClick={() => openCashModal(account, "withdraw")}
+                              >
+                                ➖
+                              </button>
                               <button
                                 type="button"
                                 className="icon-button"
@@ -3075,7 +3440,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         <div className="table-row summary-row">
                           <span data-label="Name">Total</span>
                           <span data-label="Type">—</span>
-                          <span data-label="Manual invested">
+                          <span data-label="Capital contributed">
                             {formatMoney(accountsSummary.manualInvested, totalCurrency)}
                           </span>
                           <span data-label="Holdings allocation">
@@ -3089,7 +3454,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                               {accountsSummary.holdingsCount === 1 ? "" : "s"}
                             </small>
                           </span>
-                          <span data-label="Liquidity">
+                          <span data-label="Cash available">
                             {formatMoney(accountsSummary.liquidity, totalCurrency)}
                           </span>
                           <span data-label="Total">
@@ -3124,29 +3489,6 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             </div>
             <div className="card-actions">
               <span className="pill ghost">{holdings.length} tracked</span>
-              <button
-                type="button"
-                className="button compact"
-                title="Download holdings as CSV"
-                onClick={handleExportHoldings}
-              >
-                Export CSV
-              </button>
-              <button
-                type="button"
-                className="button compact"
-                title="Import holdings from a CSV file"
-                onClick={() => importInputRef.current?.click()}
-              >
-                Import CSV
-              </button>
-              <input
-                ref={importInputRef}
-                type="file"
-                accept=".csv,text/csv"
-                onChange={handleImportHoldings}
-                hidden
-              />
               <button
                   type="button"
                   className="button primary compact"
@@ -3261,6 +3603,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 >
                   P/L {renderSortIcon("pl")}
                 </button>
+                <span>Actions</span>
               </div>
               <div className="table-body">
                 {sortedHoldings.map((holding: HoldingStats) => {
@@ -3376,66 +3719,6 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                             <span className="muted">{instrumentName}</span>
                           )}
                         </div>
-                        <div className="instrument-actions column">
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Edit ${holding.symbol}`}
-                              onClick={() => {
-                                setHoldingFormFromHolding(holding);
-                                setEditingHoldingId(holding.id);
-                                setShowAddHoldingModal(true);
-                              }}
-                            >
-                              ✏️
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Duplicate ${holding.symbol}`}
-                              onClick={() => {
-                                setHoldingFormFromHolding(holding);
-                                setEditingHoldingId(null);
-                                setShowAddHoldingModal(true);
-                              }}
-                            >
-                              ⧉
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Buy more of ${holding.symbol}`}
-                              onClick={() => openBuyModal(holding)}
-                            >
-                              🛒
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Sell ${holding.symbol}`}
-                              onClick={() => openSellModal(holding)}
-                            >
-                              💸
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Remove ${holding.symbol} and refund`}
-                              disabled={deletingId === holding.id}
-                              onClick={() => handleRefundHolding(holding)}
-                            >
-                              ↩️
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Delete ${holding.symbol}`}
-                              disabled={deletingId === holding.id}
-                              onClick={() => handleDeleteHolding(holding.id)}
-                            >
-                              🗑️
-                            </button>
-                        </div>
                       </span>
                       <span data-label="Account">
                         {holding.account?.name || "—"}
@@ -3484,6 +3767,17 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         {annualized !== null && (
                           <small>Ann.: {formatPercentSigned(annualized)}</small>
                         )}
+                      </span>
+                      <span className="holding-actions" data-label="Actions">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Open actions for ${holding.symbol}`}
+                          title="View details and actions"
+                          onClick={() => setHoldingActionsTarget(holding)}
+                        >
+                          ⋯
+                        </button>
                       </span>
                     </div>
                   );
@@ -3952,7 +4246,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   </small>
                 </label>
                 <label>
-                  Liquidity
+                  Cash available
                   <input
                     type="number"
                     step="any"
@@ -3966,10 +4260,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       }))
                     }
                   />
-                  <small className="muted">Cash available before manual investments.</small>
+                  <small className="muted">Cash available before contributions.</small>
                 </label>
                 <label>
-                  Manual invested
+                  Capital contributed
                   <input
                     type="number"
                     step="any"
@@ -3983,9 +4277,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       }))
                     }
                   />
-                  <small className="muted">
-                    Added to liquidity to track cash injected.
-                  </small>
+                  <small className="muted">Added to liquidity to track contributions.</small>
                 </label>
               </div>
               <div className="symbol-modal-footer">
@@ -4540,7 +4832,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   Holdings {accountHoldingsCount.get(accountDeleteTarget.id) || 0}
                 </span>
                 <span className="pill ghost">
-                  Liquidity {formatMoney(accountDeleteTarget.liquidity, totalCurrency)}
+                  Cash available {formatMoney(accountDeleteTarget.liquidity, totalCurrency)}
                 </span>
               </div>
             </div>
@@ -4567,6 +4859,454 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      {holdingActionsTarget &&
+        (() => {
+          const holding = holdingActionsTarget;
+          const totalCost = getHoldingTotalCost(holding);
+          const feeValue = getHoldingFeeValue(holding);
+          const isForeignCurrency =
+            holding.currency?.toUpperCase() !== DISPLAY_CURRENCY;
+          const fxRate = isForeignCurrency ? holding.fx_rate : null;
+          const costEur = fxRate && totalCost ? totalCost * fxRate : null;
+          const costPerShareEur =
+            fxRate && holding.cost_basis ? holding.cost_basis * fxRate : null;
+          const feeEur = fxRate && feeValue ? feeValue * fxRate : null;
+          const costPerSharePrimary =
+            isForeignCurrency && costPerShareEur !== null && costPerShareEur !== undefined
+              ? formatMoney(costPerShareEur, DISPLAY_CURRENCY)
+              : formatMoney(holding.cost_basis, holding.currency);
+          const costPerShareSecondary =
+            isForeignCurrency && costPerShareEur !== null && costPerShareEur !== undefined
+              ? formatMoney(holding.cost_basis, holding.currency)
+              : null;
+          const totalCostPrimary =
+            isForeignCurrency && costEur !== null && costEur !== undefined
+              ? formatMoney(costEur, DISPLAY_CURRENCY)
+              : formatMoney(totalCost, holding.currency);
+          const totalCostSecondary =
+            isForeignCurrency && costEur !== null && costEur !== undefined
+              ? formatMoney(totalCost, holding.currency)
+              : null;
+          const feePrimary =
+            feeValue > 0
+              ? isForeignCurrency && feeEur !== null && feeEur !== undefined
+                ? formatMoney(feeEur, DISPLAY_CURRENCY)
+                : formatMoney(feeValue, holding.currency)
+              : "—";
+          const feeSecondary =
+            feeValue > 0 &&
+            isForeignCurrency &&
+            feeEur !== null &&
+            feeEur !== undefined
+              ? formatMoney(feeValue, holding.currency)
+              : null;
+          const lastPriceDisplay = renderAmount(holding.last_price, holding.currency);
+          const lastPriceText = `${lastPriceDisplay.primary}${
+            lastPriceDisplay.secondary ? ` (${lastPriceDisplay.secondary})` : ""
+          }`;
+          const accountLabel = holding.account?.name || "—";
+          const accountType = holding.account?.account_type
+            ? ` (${holding.account.account_type})`
+            : "";
+          return (
+            <div className="symbol-modal-backdrop" onClick={closeHoldingActions}>
+              <div
+                className="symbol-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="holding-actions-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="symbol-modal-header">
+                  <div>
+                    <p className="eyebrow">Holdings</p>
+                    <h3 id="holding-actions-title">
+                      {holding.name || holding.symbol || "Holding details"}
+                    </h3>
+                    <hr/>
+                  </div>
+                  <button className="modal-close" type="button" onClick={closeHoldingActions}>
+                    ×
+                  </button>
+                </div>
+                <div className="symbol-modal-body holding-modal-body">
+                  <div className="holding-detail">
+                    Name
+                    <strong>{holding.name || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Symbol
+                    <strong>{holding.symbol || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    ISIN
+                    <strong>{holding.isin || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Account
+                    <strong>{`${accountLabel}${accountType}`}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Shares
+                    <strong>{holding.shares.toFixed(2)}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Cost per share
+                    <strong>
+                      {costPerSharePrimary}
+                      {costPerShareSecondary ? ` (${costPerShareSecondary})` : ""}
+                    </strong>
+                  </div>
+                  <div className="holding-detail">
+                    Total cost
+                    <strong>
+                      {totalCostPrimary}
+                      {totalCostSecondary ? ` (${totalCostSecondary})` : ""}
+                    </strong>
+                  </div>
+                  <div className="holding-detail">
+                    Fee
+                    <strong>
+                      {feePrimary}
+                      {feeSecondary ? ` (${feeSecondary})` : ""}
+                    </strong>
+                  </div>
+                  <div className="holding-detail">
+                    Currency
+                    <strong>{holding.currency || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Buy FX
+                    <strong>{fxRate ? fxRate.toFixed(6) : "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Acquired
+                    <strong>{formatDate(holding.acquired_at)}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Last price
+                    <strong>{lastPriceText}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Last price at
+                    <strong>{formatDateTime(holding.last_snapshot_at)}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Type
+                    <strong>{holding.asset_type || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Sector
+                    <strong>{holding.sector || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Industry
+                    <strong>{holding.industry || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    MIC
+                    <strong>{holding.mic || "—"}</strong>
+                  </div>
+                  <div className="holding-detail">
+                    Link
+                    <strong>
+                      {holding.href ? (
+                        <a href={holding.href} target="_blank" rel="noreferrer">
+                          Open
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </strong>
+                  </div>
+                </div>
+                <div className="symbol-modal-footer">
+                  <div className="holding-modal-actions">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="Edit holding"
+                      onClick={() => {
+                        queueHoldingReturn(holding);
+                        setHoldingFormFromHolding(holding);
+                        setEditingHoldingId(holding.id);
+                        setShowAddHoldingModal(true);
+                      }}
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="Duplicate holding"
+                      onClick={() => {
+                        queueHoldingReturn(holding);
+                        setHoldingFormFromHolding(holding);
+                        setEditingHoldingId(null);
+                        setShowAddHoldingModal(true);
+                      }}
+                    >
+                      ⧉
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="Buy more"
+                      onClick={() => {
+                        queueHoldingReturn(holding);
+                        openBuyModal(holding);
+                      }}
+                    >
+                      🛒
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="Sell"
+                      onClick={() => {
+                        queueHoldingReturn(holding);
+                        openSellModal(holding);
+                      }}
+                    >
+                      💸
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="Remove and refund"
+                      disabled={deletingId === holding.id}
+                      onClick={() => {
+                        openHoldingConfirm(holding, "refund");
+                      }}
+                    >
+                      ↩️
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      title="Delete"
+                      disabled={deletingId === holding.id}
+                      onClick={() => {
+                        openHoldingConfirm(holding, "delete");
+                      }}
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      {holdingConfirmTarget &&
+        (() => {
+          const { holding, mode } = holdingConfirmTarget;
+          const totalCost = getHoldingTotalCost(holding);
+          const currency = (holding.currency || "EUR").toUpperCase();
+          const isForeignCurrency = currency !== DISPLAY_CURRENCY;
+          const fxRate = isForeignCurrency ? holding.fx_rate : null;
+          const refundEur = fxRate && totalCost ? totalCost * fxRate : null;
+          const refundLabel =
+            isForeignCurrency && refundEur !== null && refundEur !== undefined
+              ? `${formatMoney(totalCost, currency)} (${formatMoney(refundEur, DISPLAY_CURRENCY)})`
+              : formatMoney(totalCost, currency);
+          const accountLabel = holding.account?.name || "—";
+          return (
+            <div
+              className="symbol-modal-backdrop"
+              onClick={() => setHoldingConfirmTarget(null)}
+            >
+              <div
+                className="symbol-modal confirm-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="holding-confirm-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="symbol-modal-header">
+                  <div>
+                    <p className="eyebrow">Holdings</p>
+                    <h3 id="holding-confirm-title">
+                      {mode === "refund" ? "Remove & refund holding?" : "Delete holding?"}
+                    </h3>
+                  </div>
+                  <button
+                    className="modal-close"
+                    type="button"
+                    onClick={() => setHoldingConfirmTarget(null)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="confirm-modal-body">
+                  <p className="confirm-warning">
+                    {mode === "refund"
+                      ? "This will remove the holding and refund its cost back to cash. This action is irreversible."
+                      : "This will permanently delete the holding. This action is irreversible."}
+                  </p>
+                  <div className="confirm-details">
+                    <span className="pill ghost">
+                      {holding.symbol || holding.name || "Holding"}
+                    </span>
+                    <span className="pill ghost">
+                      {holding.shares.toFixed(2)} shares
+                    </span>
+                    <span className="pill ghost">Account {accountLabel}</span>
+                    {mode === "refund" && (
+                      <span className="pill ghost">Refund {refundLabel}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="symbol-modal-footer">
+                  <div className="footer-right">
+                    <button
+                      className="button"
+                      type="button"
+                      onClick={() => setHoldingConfirmTarget(null)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className={`button ${mode === "refund" ? "primary" : "danger"}`}
+                      type="button"
+                      disabled={deletingId === holding.id}
+                      onClick={async () => {
+                        const success =
+                          mode === "refund"
+                            ? await handleRefundHolding(holding)
+                            : await handleDeleteHolding(holding.id);
+                        if (success) {
+                          setHoldingConfirmTarget(null);
+                        }
+                      }}
+                    >
+                      {mode === "refund" ? "Remove & refund" : "Delete holding"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      {cashTargetAccount && (
+        <div className="symbol-modal-backdrop" onClick={closeCashModal}>
+          <div
+            className="symbol-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cash-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">Accounts</p>
+                <h3 id="cash-modal-title">
+                  {cashForm.mode === "add" ? "Add cash" : "Withdraw cash"}
+                </h3>
+              </div>
+              <button className="modal-close" type="button" onClick={closeCashModal}>
+                ×
+              </button>
+            </div>
+            <form className="form" onSubmit={handleCashMovement}>
+              <div className="symbol-modal-body cash-modal-body">
+                <label>
+                  Amount
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder="0"
+                    value={cashForm.amount}
+                    onChange={(e) =>
+                      setCashForm((prev) => ({ ...prev, amount: e.target.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  Action
+                  <select
+                    value={cashForm.mode}
+                    onChange={(e) =>
+                      setCashForm((prev) => {
+                        const mode = e.target.value as "add" | "withdraw";
+                        const options = CASH_REASON_OPTIONS[mode];
+                        const defaultReason = CASH_REASON_DEFAULT[mode];
+                        const shouldReplace =
+                          !prev.reasonPreset || !options.includes(prev.reasonPreset);
+                        return {
+                          ...prev,
+                          mode,
+                          reasonPreset: shouldReplace ? defaultReason : prev.reasonPreset,
+                          reasonCustom: shouldReplace ? "" : prev.reasonCustom,
+                        };
+                      })
+                    }
+                  >
+                    <option value="add">Add cash</option>
+                    <option value="withdraw">Withdraw cash</option>
+                  </select>
+                </label>
+                <label>
+                  Reason
+                  <div className="inline-row">
+                    <select
+                      value={cashForm.reasonPreset}
+                      onChange={(e) =>
+                        setCashForm((prev) => ({
+                          ...prev,
+                          reasonPreset: e.target.value,
+                          reasonCustom: e.target.value === "Other" ? prev.reasonCustom : "",
+                        }))
+                      }
+                    >
+                      {CASH_REASON_OPTIONS[cashForm.mode].map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                    {cashForm.reasonPreset === "Other" && (
+                      <input
+                        required
+                        placeholder="Describe the reason"
+                        value={cashForm.reasonCustom}
+                        onChange={(e) =>
+                          setCashForm((prev) => ({
+                            ...prev,
+                            reasonCustom: e.target.value,
+                          }))
+                        }
+                      />
+                    )}
+                  </div>
+                </label>
+              </div>
+              <div className="confirm-details">
+                <span className="pill ghost">{cashTargetAccount.name}</span>
+                <span className="pill ghost">
+                  Cash available {formatMoney(cashTargetAccount.liquidity, totalCurrency)}
+                </span>
+                {cashPreview !== null && (
+                  <span className={`pill ${cashPreview < 0 ? "danger" : "ghost"}`}>
+                    After {formatMoney(cashPreview, totalCurrency)}
+                  </span>
+                )}
+              </div>
+              <div className="symbol-modal-footer">
+                <div className="footer-right">
+                  <button className="button" type="button" onClick={closeCashModal}>
+                    Cancel
+                  </button>
+                  <button className="button primary" type="submit">
+                    {cashForm.mode === "add" ? "Add cash" : "Withdraw cash"}
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

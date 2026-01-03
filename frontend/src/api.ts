@@ -44,10 +44,11 @@ export interface PortfolioResponse {
   accounts?: Account[];
 }
 
-export interface HoldingsImportResult {
-  created: number;
-  skipped: number;
-  errors: string[];
+export interface BackupImportResult {
+  accounts: number;
+  holdings: number;
+  transactions: number;
+  cash_transactions: number;
 }
 
 export interface HoldingSellResult {
@@ -181,18 +182,25 @@ export async function updateAccount(
   return api.put<Account>(`/accounts/${accountId}`, payload);
 }
 
+export async function moveAccountCash(
+  accountId: number,
+  payload: { amount: number; direction: "ADD" | "WITHDRAW"; reason: string }
+) {
+  return api.post<Account>(`/accounts/${accountId}/cash`, payload);
+}
+
 export async function deleteAccount(accountId: number) {
   return api.delete(`/accounts/${accountId}`);
 }
 
-export async function exportHoldingsCsv() {
-  return api.get<Blob>("/holdings/export", { responseType: "blob" });
+export async function exportBackupJson() {
+  return api.get("/backup/export");
 }
 
-export async function importHoldingsCsv(file: File) {
+export async function importBackupJson(file: File) {
   const formData = new FormData();
   formData.append("file", file);
-  return api.post<HoldingsImportResult>("/holdings/import", formData, {
+  return api.post<BackupImportResult>("/backup/import", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
 }

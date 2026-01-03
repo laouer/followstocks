@@ -1,6 +1,5 @@
 import asyncio
-import csv
-import io
+import json
 import logging
 import os
 import statistics
@@ -11,8 +10,9 @@ from typing import Any, List
 import httpx
 import yfinance as yf
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -168,68 +168,6 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _parse_csv_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    text = text.replace(" ", "")
-    if "," in text and "." in text:
-        if text.rfind(",") > text.rfind("."):
-            text = text.replace(".", "").replace(",", ".")
-        else:
-            text = text.replace(",", "")
-    elif text.count(",") == 1 and text.count(".") == 0:
-        text = text.replace(",", ".")
-    return float(text)
-
-
-def _parse_csv_date(value: Any) -> date | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    with suppress(ValueError):
-        parsed = datetime.fromisoformat(text)
-        return parsed.date()
-    with suppress(ValueError):
-        return date.fromisoformat(text)
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d", "%m/%d/%Y"):
-        with suppress(ValueError):
-            return datetime.strptime(text, fmt).date()
-    raise ValueError("invalid date format")
-
-
-def _parse_csv_datetime(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    with suppress(ValueError):
-        return datetime.fromisoformat(text)
-    for fmt in (
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d %H:%M:%S",
-        "%d/%m/%Y %H:%M",
-        "%d/%m/%Y %H:%M:%S",
-        "%d-%m-%Y %H:%M",
-        "%d-%m-%Y %H:%M:%S",
-        "%d.%m.%Y %H:%M",
-        "%d.%m.%Y %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-        "%m/%d/%Y %H:%M",
-        "%m/%d/%Y %H:%M:%S",
-    ):
-        with suppress(ValueError):
-            return datetime.strptime(text, fmt)
-    parsed_date = _parse_csv_date(text)
-    return datetime.combine(parsed_date, datetime.min.time())
 
 
 def _normalize_dividend_yield(value: Any) -> float | None:
@@ -605,6 +543,22 @@ def update_account(
         raise HTTPException(status_code=400, detail="Account already exists") from exc
 
 
+@app.post("/accounts/{account_id}/cash", response_model=schemas.Account)
+def move_account_cash(
+    account_id: int,
+    payload: schemas.CashMovementRequest,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    account = crud.get_account(db, current_user.id, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    try:
+        return crud.apply_cash_movement(db, account, current_user.id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.delete("/accounts/{account_id}")
 def delete_account(
     account_id: int,
@@ -775,332 +729,193 @@ def list_holdings(
     return crud.get_holdings_with_stats(db, current_user.id)
 
 
-@app.get("/holdings/export")
-def export_holdings(
+@app.get("/backup/export", response_model=schemas.BackupPayload)
+def export_backup(
     db: Session = Depends(get_session),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    holdings = crud.get_holdings_with_stats(db, current_user.id)
-    output = io.StringIO()
-    writer = csv.writer(output, delimiter=";")
-    headers = [
-        "symbol",
-        "shares",
-        "cost_basis",
-        "acquisition_fee_value",
-        "currency",
-        "account",
-        "account_type",
-        "account_liquidity",
-        "sector",
-        "industry",
-        "type",
-        "isin",
-        "mic",
-        "name",
-        "href",
-        "acquired_at",
-        "last_price",
-        "last_price_at",
-    ]
-    writer.writerow(headers)
-    for holding in holdings:
-        account_name = holding.account.name if holding.account else ""
-        account_type = holding.account.account_type if holding.account else ""
-        account_liquidity = holding.account.liquidity if holding.account else ""
-        writer.writerow(
-            [
-                holding.symbol,
-                holding.shares,
-                holding.cost_basis,
-                holding.acquisition_fee_value,
-                holding.currency,
-                account_name,
-                account_type or "",
-                account_liquidity,
-                holding.sector or "",
-                holding.industry or "",
-                holding.asset_type or "",
-                holding.isin or "",
-                holding.mic or "",
-                holding.name or "",
-                holding.href or "",
-                holding.acquired_at.isoformat() if holding.acquired_at else "",
-                holding.last_price if holding.last_price is not None else "",
-                holding.last_snapshot_at.isoformat() if holding.last_snapshot_at else "",
-            ]
-        )
-    filename = f"holdings-{datetime.utcnow().strftime('%Y%m%d')}.csv"
-    return Response(
-        content=output.getvalue(),
-        media_type="text/csv",
+    accounts = crud.get_accounts(db, current_user.id)
+    holdings = (
+        db.query(models.Holding)
+        .filter(models.Holding.user_id == current_user.id)
+        .all()
+    )
+    transactions = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.user_id == current_user.id)
+        .all()
+    )
+    cash_transactions = (
+        db.query(models.CashTransaction)
+        .filter(models.CashTransaction.user_id == current_user.id)
+        .all()
+    )
+    payload = schemas.BackupPayload(
+        exported_at=datetime.utcnow(),
+        accounts=[schemas.BackupAccount.model_validate(account) for account in accounts],
+        holdings=[schemas.BackupHolding.model_validate(holding) for holding in holdings],
+        transactions=[
+            schemas.BackupTransaction.model_validate(transaction) for transaction in transactions
+        ],
+        cash_transactions=[
+            schemas.BackupCashTransaction.model_validate(transaction)
+            for transaction in cash_transactions
+        ],
+    )
+    filename = f"backup-{datetime.utcnow().strftime('%Y%m%d')}.json"
+    return JSONResponse(
+        content=jsonable_encoder(payload),
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
-@app.post("/holdings/import", response_model=schemas.HoldingsImportResult)
-async def import_holdings(
+@app.post("/backup/import", response_model=schemas.BackupImportResult)
+async def import_backup(
     file: UploadFile = File(...),
     db: Session = Depends(get_session),
     current_user: models.User = Depends(auth.get_current_user),
 ):
     content = await file.read()
     try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from exc
+        payload = schemas.BackupPayload.model_validate(json.loads(content))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON file") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid backup payload: {exc}") from exc
 
-    try:
-        sample = text[:2048]
-        dialect = csv.Sniffer().sniff(sample, delimiters=";,")
-    except csv.Error:
-        dialect = csv.excel
-        dialect.delimiter = ";"
+    if payload.version != 1:
+        raise HTTPException(status_code=400, detail="Unsupported backup version")
 
-    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
-    if not reader.fieldnames:
-        raise HTTPException(status_code=400, detail="CSV missing header row")
-
-    key_map = {
-        "symbol": "symbol",
-        "shares": "shares",
-        "cost_basis": "cost_basis",
-        "cost": "cost_basis",
-        "acquisition_fee_value": "acquisition_fee_value",
-        "acquisition_fee": "acquisition_fee_value",
-        "fee": "acquisition_fee_value",
-        "fee_value": "acquisition_fee_value",
-        "currency": "currency",
-        "account": "account",
-        "account_name": "account",
-        "account_id": "account_id",
-        "account type": "account_type",
-        "account_type": "account_type",
-        "account liquidity": "account_liquidity",
-        "account_liquidity": "account_liquidity",
-        "liquidity": "account_liquidity",
-        "sector": "sector",
-        "industry": "industry",
-        "asset_type": "asset_type",
-        "asset type": "asset_type",
-        "type": "asset_type",
-        "isin": "isin",
-        "mic": "mic",
-        "name": "name",
-        "href": "href",
-        "acquired_at": "acquired_at",
-        "last_price": "last_price",
-        "price": "last_price",
-        "last_price_at": "last_price_at",
-        "last_snapshot_at": "last_price_at",
-        "price_at": "last_price_at",
-        "price_time": "last_price_at",
-        "timestamp": "last_price_at",
+    account_ids = {account.id for account in payload.accounts}
+    missing_account_refs = {
+        holding.account_id for holding in payload.holdings if holding.account_id not in account_ids
     }
-    normalized_headers = {str(name).strip().lower() for name in reader.fieldnames}
-    mapped_headers = {key_map.get(name) for name in normalized_headers if key_map.get(name)}
-    required_fields = {"symbol", "shares", "cost_basis"}
-    if not required_fields.issubset(mapped_headers):
-        missing = required_fields - mapped_headers
-        raise HTTPException(
-            status_code=400,
-            detail=f"CSV missing required columns: {', '.join(sorted(missing))}",
+    missing_account_refs.update(
+        transaction.account_id
+        for transaction in payload.transactions
+        if transaction.account_id not in account_ids
+    )
+    missing_account_refs.update(
+        transaction.account_id
+        for transaction in payload.cash_transactions
+        if transaction.account_id not in account_ids
+    )
+    if missing_account_refs:
+        missing = ", ".join(str(account_id) for account_id in sorted(missing_account_refs))
+        raise HTTPException(status_code=400, detail=f"Missing accounts in backup: {missing}")
+
+    db.query(models.Holding).filter(models.Holding.user_id == current_user.id).delete(
+        synchronize_session=False
+    )
+    db.query(models.Transaction).filter(models.Transaction.user_id == current_user.id).delete(
+        synchronize_session=False
+    )
+    db.query(models.CashTransaction).filter(
+        models.CashTransaction.user_id == current_user.id
+    ).delete(synchronize_session=False)
+    db.query(models.Account).filter(models.Account.user_id == current_user.id).delete(
+        synchronize_session=False
+    )
+    db.commit()
+
+    account_id_map: dict[int, int] = {}
+    for account in payload.accounts:
+        created = models.Account(
+            user_id=current_user.id,
+            name=account.name,
+            account_type=account.account_type,
+            liquidity=account.liquidity,
+            manual_invested=account.manual_invested,
+            created_at=account.created_at,
+            updated_at=account.updated_at,
+        )
+        db.add(created)
+        db.flush()
+        account_id_map[account.id] = created.id
+
+    for holding in payload.holdings:
+        account_id = account_id_map.get(holding.account_id)
+        if not account_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Account id {holding.account_id} missing for holding {holding.symbol}",
+            )
+        db.add(
+            models.Holding(
+                user_id=current_user.id,
+                account_id=account_id,
+                symbol=holding.symbol,
+                shares=holding.shares,
+                cost_basis=holding.cost_basis,
+                acquisition_fee_value=holding.acquisition_fee_value,
+                fx_rate=holding.fx_rate,
+                currency=holding.currency,
+                last_price=holding.last_price,
+                last_snapshot_at=holding.last_snapshot_at,
+                sector=holding.sector,
+                industry=holding.industry,
+                asset_type=holding.asset_type,
+                isin=holding.isin,
+                acquired_at=holding.acquired_at,
+                mic=holding.mic,
+                name=holding.name,
+                href=holding.href,
+                created_at=holding.created_at,
+                updated_at=holding.updated_at,
+            )
         )
 
-    created = 0
-    skipped = 0
-    errors: list[str] = []
-    created_symbols: set[str] = set()
-
-    for row_index, row in enumerate(reader, start=2):
-        try:
-            normalized: dict[str, str | None] = {}
-            for raw_key, raw_value in row.items():
-                if raw_key is None:
-                    continue
-                mapped = key_map.get(str(raw_key).strip().lower())
-                if mapped:
-                    normalized[mapped] = raw_value
-
-            symbol = (normalized.get("symbol") or "").strip()
-            if not symbol:
-                raise ValueError("symbol is required")
-
-            try:
-                shares = _parse_csv_float(normalized.get("shares"))
-            except ValueError as exc:
-                raise ValueError("invalid shares") from exc
-            if shares is None or shares <= 0:
-                raise ValueError("shares must be > 0")
-
-            try:
-                cost_basis = _parse_csv_float(normalized.get("cost_basis"))
-            except ValueError as exc:
-                raise ValueError("invalid cost_basis") from exc
-            if cost_basis is None or cost_basis <= 0:
-                raise ValueError("cost_basis must be > 0")
-
-            fee_value = 0.0
-            if normalized.get("acquisition_fee_value") not in (None, ""):
-                try:
-                    fee_value = _parse_csv_float(normalized.get("acquisition_fee_value")) or 0.0
-                except ValueError as exc:
-                    raise ValueError("invalid acquisition_fee_value") from exc
-            if fee_value < 0:
-                raise ValueError("acquisition_fee_value must be >= 0")
-
-            currency = normalized.get("currency")
-            currency = currency.strip().upper() if currency else None
-
-            account_id = None
-            if normalized.get("account_id") not in (None, ""):
-                try:
-                    account_id = int(str(normalized.get("account_id")).strip())
-                except ValueError as exc:
-                    raise ValueError("invalid account_id") from exc
-                if account_id <= 0:
-                    raise ValueError("account_id must be > 0")
-
-            account_name = None
-            if normalized.get("account"):
-                account_name = str(normalized.get("account")).strip()
-                if not account_name:
-                    account_name = None
-
-            account_type = None
-            if normalized.get("account_type"):
-                account_type = str(normalized.get("account_type")).strip() or None
-
-            account_liquidity = 0.0
-            if normalized.get("account_liquidity") not in (None, ""):
-                try:
-                    account_liquidity = (
-                        _parse_csv_float(normalized.get("account_liquidity")) or 0.0
-                    )
-                except ValueError as exc:
-                    raise ValueError("invalid account_liquidity") from exc
-                if account_liquidity < 0:
-                    raise ValueError("account_liquidity must be >= 0")
-
-            acquired_at = None
-            if normalized.get("acquired_at"):
-                try:
-                    acquired_at = _parse_csv_date(normalized.get("acquired_at"))
-                except ValueError as exc:
-                    raise ValueError(
-                        "invalid acquired_at (use YYYY-MM-DD, DD/MM/YYYY, or ISO datetime)"
-                    ) from exc
-
-            last_price = None
-            if normalized.get("last_price") not in (None, ""):
-                try:
-                    last_price = _parse_csv_float(normalized.get("last_price"))
-                except ValueError as exc:
-                    raise ValueError("invalid last_price") from exc
-                if last_price is None or last_price <= 0:
-                    raise ValueError("last_price must be > 0")
-
-            last_price_at = None
-            if normalized.get("last_price_at"):
-                try:
-                    last_price_at = _parse_csv_datetime(normalized.get("last_price_at"))
-                except ValueError as exc:
-                    raise ValueError(
-                        "invalid last_price_at (use YYYY-MM-DD, DD/MM/YYYY, or ISO datetime)"
-                    ) from exc
-
-            payload: dict[str, Any] = {
-                "symbol": symbol,
-                "shares": shares,
-                "cost_basis": cost_basis,
-                "acquisition_fee_value": fee_value,
-            }
-            if account_id is not None:
-                account = crud.get_account(db, current_user.id, account_id)
-                if not account:
-                    raise ValueError("account_id not found")
-                payload["account_id"] = account.id
-            elif account_name:
-                account = crud.get_or_create_account_by_name(
-                    db,
-                    current_user.id,
-                    account_name,
-                    account_type=account_type,
-                    liquidity=account_liquidity,
-                )
-                payload["account_id"] = account.id
-            else:
-                account = crud.get_or_create_default_account(db, current_user.id)
-                payload["account_id"] = account.id
-            if currency:
-                payload["currency"] = currency
-            if normalized.get("isin"):
-                payload["isin"] = str(normalized.get("isin")).strip() or None
-            if normalized.get("mic"):
-                payload["mic"] = str(normalized.get("mic")).strip() or None
-            if normalized.get("name"):
-                payload["name"] = str(normalized.get("name")).strip() or None
-            if normalized.get("href"):
-                payload["href"] = str(normalized.get("href")).strip() or None
-            if acquired_at:
-                payload["acquired_at"] = acquired_at
-            if normalized.get("sector"):
-                payload["sector"] = str(normalized.get("sector")).strip() or None
-            if normalized.get("industry"):
-                payload["industry"] = str(normalized.get("industry")).strip() or None
-            if normalized.get("asset_type"):
-                payload["asset_type"] = str(normalized.get("asset_type")).strip() or None
-
-            holding = schemas.HoldingCreate(**payload)
-            created_holding = crud.create_holding(db, current_user.id, holding)
-            try:
-                transaction = schemas.TransactionCreate(
-                    account_id=holding.account_id,
-                    symbol=holding.symbol,
-                    side="BUY",
-                    shares=holding.shares,
-                    price=holding.cost_basis,
-                    fee_value=holding.acquisition_fee_value,
-                    currency=holding.currency,
-                    executed_at=holding.acquired_at,
-                )
-                crud.create_transaction(db, current_user.id, transaction)
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "Import failed to record BUY transaction for %s: %s",
-                    holding.symbol,
-                    exc,
-                )
-            if last_price is not None:
-                recorded_at = last_price_at or datetime.utcnow()
-                crud.add_price_snapshot(
-                    db,
-                    created_holding,
-                    schemas.PriceSnapshotCreate(
-                        holding_id=created_holding.id,
-                        price=last_price,
-                        recorded_at=recorded_at,
-                    ),
-                )
-            created_symbols.add(created_holding.symbol)
-            created += 1
-        except Exception as exc:  # noqa: BLE001
-            skipped += 1
-            errors.append(f"Row {row_index}: {exc}")
-
-    if created_symbols:
-        try:
-            holdings = (
-                db.query(models.Holding)
-                .filter(models.Holding.symbol.in_(created_symbols))
-                .all()
+    for transaction in payload.transactions:
+        account_id = account_id_map.get(transaction.account_id)
+        if not account_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Account id {transaction.account_id} missing for transaction",
             )
-            grouped = _group_holdings_by_symbol(holdings)
-            await _refresh_grouped_holdings(db, grouped)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Import refresh failed: %s", exc)
+        db.add(
+            models.Transaction(
+                user_id=current_user.id,
+                account_id=account_id,
+                symbol=transaction.symbol,
+                side=transaction.side,
+                shares=transaction.shares,
+                price=transaction.price,
+                fee_value=transaction.fee_value,
+                currency=transaction.currency,
+                executed_at=transaction.executed_at,
+                realized_gain=transaction.realized_gain,
+                created_at=transaction.created_at,
+                updated_at=transaction.updated_at,
+            )
+        )
 
-    return schemas.HoldingsImportResult(created=created, skipped=skipped, errors=errors)
+    for transaction in payload.cash_transactions:
+        account_id = account_id_map.get(transaction.account_id)
+        if not account_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Account id {transaction.account_id} missing for cash transaction",
+            )
+        db.add(
+            models.CashTransaction(
+                user_id=current_user.id,
+                account_id=account_id,
+                amount=transaction.amount,
+                direction=transaction.direction,
+                reason=transaction.reason,
+                created_at=transaction.created_at,
+                updated_at=transaction.updated_at,
+            )
+        )
+
+    db.commit()
+
+    return schemas.BackupImportResult(
+        accounts=len(payload.accounts),
+        holdings=len(payload.holdings),
+        transactions=len(payload.transactions),
+        cash_transactions=len(payload.cash_transactions),
+    )
 
 
 @app.put("/holdings/{holding_id}", response_model=schemas.Holding)
