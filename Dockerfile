@@ -9,15 +9,16 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---------- Backend runtime ----------
-FROM python:3.11-slim
+FROM python:3.10-slim
 WORKDIR /app/backend
 
 # Install system deps
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/Pipfile backend/Pipfile.lock ./
+RUN pip install --no-cache-dir pipenv \
+    && pipenv install --system --deploy --ignore-pipfile
 
 # Copy backend code
 COPY backend/ /app/backend/

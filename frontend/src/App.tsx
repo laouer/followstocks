@@ -171,6 +171,8 @@ const CASH_REASON_DEFAULT = {
   withdraw: "Withdrawal",
 } as const;
 const LOSS_COLOR = "#fb7185";
+const YFINANCE_WARNING_FALLBACK =
+  "Last prices are not updated because Yahoo Finance is unreachable (connection lost or blocked).";
 
 const formatPercent = (value?: number | null) => {
   if (value === null || value === undefined) return "—";
@@ -355,6 +357,7 @@ function App() {
   });
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const yfinanceStatusRef = useRef<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [backupImportTarget, setBackupImportTarget] = useState<File | null>(null);
   const includeAllRef = useRef<HTMLInputElement | null>(null);
@@ -1854,7 +1857,18 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           setShareEditForm({ holdingId: "", shares: "" });
         }
       }
-      setStatus({ kind: "idle" });
+      const yfinanceStatus = res.data.yfinance_status;
+      if (yfinanceStatus && yfinanceStatus.ok === false) {
+        const message = yfinanceStatus.message || YFINANCE_WARNING_FALLBACK;
+        const key = `${yfinanceStatus.last_error_at || ""}|${message}`;
+        if (key !== yfinanceStatusRef.current) {
+          yfinanceStatusRef.current = key;
+          setStatus({ kind: "error", message });
+        }
+      } else {
+        yfinanceStatusRef.current = null;
+        setStatus({ kind: "idle" });
+      }
     } catch (err) {
       const response = (err as { response?: { status?: number; data?: { detail?: string } } })
         ?.response;

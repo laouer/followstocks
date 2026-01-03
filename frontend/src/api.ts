@@ -38,10 +38,17 @@ export interface PortfolioSummary {
   hourly_change_pct: number | null;
 }
 
+export interface YahooFinanceStatus {
+  ok: boolean;
+  message?: string | null;
+  last_error_at?: string | null;
+}
+
 export interface PortfolioResponse {
   summary: PortfolioSummary;
   holdings: HoldingStats[];
   accounts?: Account[];
+  yfinance_status?: YahooFinanceStatus | null;
 }
 
 export interface BackupImportResult {

@@ -2,6 +2,33 @@
 
 React + FastAPI starter to track stock positions, log hourly price snapshots, and view gains/losses.
 
+## Docker
+Run the prebuilt image:
+
+```bash
+docker pull meanouar/followstocks
+docker run --name followstocks -p 8000:8000 -p 4173:4173 meanouar/followstocks
+```
+
+Persist SQLite data locally:
+
+```bash
+touch data.db
+docker run --name followstocks \
+  -p 8000:8000 -p 4173:4173 \
+  -v "$(pwd)/data.db:/app/backend/data.db" \
+  meanouar/followstocks
+```
+
+Build the image yourself:
+
+```bash
+docker build -t meanouar/followstocks .
+```
+
+Frontend: `http://localhost:4173`  
+API: `http://localhost:8000`
+
 ## Backend (FastAPI)
 Requirements: Python 3.11+, virtualenv recommended.
 

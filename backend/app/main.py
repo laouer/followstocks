@@ -5,6 +5,7 @@ import os
 import statistics
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime
+from threading import Lock
 from typing import Any, List
 
 import httpx
@@ -83,6 +84,41 @@ CAC40_METRICS = {
 
 _cac40_cache: dict[str, Any] = {"timestamp": None, "items": None}
 _cac40_cache_lock = asyncio.Lock()
+_yfinance_status_lock = Lock()
+_yfinance_status: dict[str, Any] = {
+    "ok": True,
+    "message": None,
+    "last_error_at": None,
+}
+YFINANCE_UNREACHABLE_MESSAGE = (
+    "Last prices are not updated because Yahoo Finance is unreachable "
+    "(connection lost or blocked)."
+)
+
+
+def _set_yfinance_error(message: str) -> None:
+    now = datetime.utcnow()
+    with _yfinance_status_lock:
+        if _yfinance_status.get("ok") or _yfinance_status.get("message") != message:
+            _yfinance_status["last_error_at"] = now
+        _yfinance_status["ok"] = False
+        _yfinance_status["message"] = message
+
+
+def _set_yfinance_ok() -> None:
+    with _yfinance_status_lock:
+        _yfinance_status["ok"] = True
+        _yfinance_status["message"] = None
+        _yfinance_status["last_error_at"] = None
+
+
+def _get_yfinance_status() -> schemas.YahooFinanceStatus:
+    with _yfinance_status_lock:
+        return schemas.YahooFinanceStatus(
+            ok=bool(_yfinance_status.get("ok")),
+            message=_yfinance_status.get("message"),
+            last_error_at=_yfinance_status.get("last_error_at"),
+        )
 
 
 async def _fetch_yfinance_quote(symbol: str) -> dict:
@@ -95,12 +131,16 @@ async def _fetch_yfinance_quote(symbol: str) -> dict:
             if hist is None or hist.empty:
                 hist = ticker.history(period="5d", interval="1d")
             if hist is None or hist.empty:
+                _set_yfinance_ok()
                 return {"price": None, "timestamp": None, "source": "yfinance"}
             last_row = hist.tail(1)
             price = float(last_row["Close"].iloc[0])
             ts = last_row.index[-1].to_pydatetime().isoformat()
+            _set_yfinance_ok()
             return {"price": price, "timestamp": ts, "source": "yfinance"}
-        except Exception:
+        except Exception as exc:
+            log.warning("yfinance quote failed for %s: %s", symbol, exc)
+            _set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
             return {"price": None, "timestamp": None, "source": "yfinance"}
 
     return await asyncio.to_thread(_sync_fetch)
@@ -118,10 +158,14 @@ async def _fetch_fx_rate(base: str, quote: str) -> float | None:
         try:
             hist = ticker.history(period="5d", interval="1d")
             if hist is None or hist.empty:
+                _set_yfinance_ok()
                 return None
             last_row = hist.tail(1)
+            _set_yfinance_ok()
             return float(last_row["Close"].iloc[0])
-        except Exception:
+        except Exception as exc:
+            log.warning("yfinance FX failed for %s: %s", symbol, exc)
+            _set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
             return None
 
     return await asyncio.to_thread(_sync_fetch)
@@ -155,9 +199,11 @@ async def _search_yfinance(query: str) -> list[dict]:
             resp = await client.get(url, params={"q": query, "quotesCount": 10, "newsCount": 0})
             resp.raise_for_status()
             data = resp.json()
+            _set_yfinance_ok()
             return data.get("quotes", []) or []
     except Exception as exc:  # noqa: BLE001
         log.warning("yfinance search failed for %s: %s", query, exc)
+        _set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
         return []
 
 
@@ -996,7 +1042,9 @@ def get_portfolio(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     try:
-        return crud.portfolio_summary(db, current_user.id)
+        response = crud.portfolio_summary(db, current_user.id)
+        response.yfinance_status = _get_yfinance_status()
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

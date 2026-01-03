@@ -285,10 +285,17 @@ class PortfolioSummary(BaseModel):
     hourly_change_pct: Optional[float] = None
 
 
+class YahooFinanceStatus(BaseModel):
+    ok: bool = True
+    message: Optional[str] = None
+    last_error_at: Optional[datetime] = None
+
+
 class PortfolioResponse(BaseModel):
     summary: PortfolioSummary
     holdings: List[HoldingStats]
     accounts: List[Account] = []
+    yfinance_status: Optional[YahooFinanceStatus] = None
 
 
 class TransactionBase(BaseModel):
