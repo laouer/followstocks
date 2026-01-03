@@ -270,6 +270,16 @@ function App() {
   const [symbolSearchStatus, setSymbolSearchStatus] = useState<Status>({
     kind: "idle",
   });
+
+  useEffect(() => {
+    if (status.kind === "success" || status.kind === "error") {
+      const timer = window.setTimeout(() => {
+        setStatus({ kind: "idle" });
+      }, 5000);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [status.kind, status.message]);
   const [showSymbolModal, setShowSymbolModal] = useState(false);
   const [showAddHoldingModal, setShowAddHoldingModal] = useState(false);
   const [symbolSearchTerm, setSymbolSearchTerm] = useState("");
@@ -2371,7 +2381,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   useEffect(() => {
     if (!holdingActionsReturnId) return;
     const actionModalOpen =
-      showAddHoldingModal || Boolean(buyHoldingTarget) || Boolean(sellHoldingTarget) || Boolean(holdingConfirmTarget);
+      showAddHoldingModal ||
+      Boolean(buyHoldingTarget) ||
+      Boolean(sellHoldingTarget) ||
+      Boolean(holdingConfirmTarget) ||
+      Boolean(cashTargetAccount);
     if (actionModalOpen) return;
     const latest = holdings.find((item) => item.id === holdingActionsReturnId);
     if (latest) {
@@ -2384,6 +2398,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     buyHoldingTarget,
     sellHoldingTarget,
     holdingConfirmTarget,
+    cashTargetAccount,
     holdings,
   ]);
 
@@ -2708,10 +2723,14 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     }
   };
 
-  const openCashModal = (account: Account, mode: "add" | "withdraw") => {
+  const openCashModal = (account: Account, mode: "add" | "withdraw", reasonPreset?: string) => {
     setCashTargetAccount(account);
-    const reasonPreset = CASH_REASON_DEFAULT[mode];
-    setCashForm({ amount: "", mode, reasonPreset, reasonCustom: "" });
+    const options = CASH_REASON_OPTIONS[mode];
+    const safeReasonPreset =
+      reasonPreset && options.includes(reasonPreset as (typeof options)[number])
+        ? reasonPreset
+        : CASH_REASON_DEFAULT[mode];
+    setCashForm({ amount: "", mode, reasonPreset: safeReasonPreset, reasonCustom: "" });
   };
 
   const closeCashModal = () => {
@@ -3207,9 +3226,6 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   </div>
                 </div>
               </div>
-              {status.kind !== "idle" && (
-                <p className={`status status-${status.kind}`}>{status.message}</p>
-              )}
             </section>
 
             <section className="card accounts-card">
@@ -3219,23 +3235,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <h2>Accounts</h2>
                 </div>
                 <div className="card-actions">
-                  <button
-                    type="button"
-                    className="button compact"
-                      onClick={() => {
-                        setAccountForm({
-                          name: "",
-                          account_type: "",
-                          liquidity: "",
-                          manual_invested: "",
-                          created_at: formatDateInput(),
-                        });
-                        setEditingAccountId(null);
-                        setShowAccountModal(true);
-                      }}
-                    >
-                      Add account
-                  </button>
+
                   <button
                     type="button"
                     className="button compact icon-only"
@@ -3274,6 +3274,23 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         />
                       </svg>
                     )}
+                  </button>
+                                    <button
+                    type="button"
+                    className="button primary compact"
+                      onClick={() => {
+                        setAccountForm({
+                          name: "",
+                          account_type: "",
+                          liquidity: "",
+                          manual_invested: "",
+                          created_at: formatDateInput(),
+                        });
+                        setEditingAccountId(null);
+                        setShowAccountModal(true);
+                      }}
+                    >
+                      + Add
                   </button>
                 </div>
               </div>
@@ -4229,7 +4246,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   </datalist>
                 </label>
                 <label>
-                  Created at
+                  Opened at
                   <input
                     type="date"
                     required
@@ -4907,10 +4924,16 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           const lastPriceText = `${lastPriceDisplay.primary}${
             lastPriceDisplay.secondary ? ` (${lastPriceDisplay.secondary})` : ""
           }`;
-          const accountLabel = holding.account?.name || "—";
-          const accountType = holding.account?.account_type
-            ? ` (${holding.account.account_type})`
+          const holdingAccount =
+            holding.account ||
+            (holding.account_id
+              ? accounts.find((account) => account.id === holding.account_id) || null
+              : null);
+          const accountLabel = holdingAccount?.name || "—";
+          const accountType = holdingAccount?.account_type
+            ? ` (${holdingAccount.account_type})`
             : "";
+          const canAdjustCash = Boolean(holdingAccount);
           return (
             <div className="symbol-modal-backdrop" onClick={closeHoldingActions}>
               <div
@@ -4932,103 +4955,102 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     ×
                   </button>
                 </div>
-                <div className="symbol-modal-body holding-modal-body">
-                  <div className="holding-detail">
-                    Name
-                    <strong>{holding.name || "—"}</strong>
+                <div className="holding-modal-content">
+                  <div className="symbol-modal-body holding-modal-body">
+                    <div className="holding-detail">
+                      Name
+                      <strong>{holding.name || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Symbol
+                      <strong>{holding.symbol || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      ISIN
+                      <strong>{holding.isin || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Account
+                      <strong>{`${accountLabel}${accountType}`}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Shares
+                      <strong>{holding.shares.toFixed(2)}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Cost per share (PRU)
+                      <strong>
+                        {costPerSharePrimary}
+                        {costPerShareSecondary ? ` (${costPerShareSecondary})` : ""}
+                      </strong>
+                    </div>
+                    <div className="holding-detail">
+                      Total cost
+                      <strong>
+                        {totalCostPrimary}
+                        {totalCostSecondary ? ` (${totalCostSecondary})` : ""}
+                      </strong>
+                    </div>
+                    <div className="holding-detail">
+                      Fee
+                      <strong>
+                        {feePrimary}
+                        {feeSecondary ? ` (${feeSecondary})` : ""}
+                      </strong>
+                    </div>
+                    <div className="holding-detail">
+                      Currency
+                      <strong>{holding.currency || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Buy FX
+                      <strong>{fxRate ? fxRate.toFixed(6) : "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Acquired
+                      <strong>{formatDate(holding.acquired_at)}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Last price
+                      <strong>{lastPriceText}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Last price at
+                      <strong>{formatDateTime(holding.last_snapshot_at)}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Type
+                      <strong>{holding.asset_type || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Sector
+                      <strong>{holding.sector || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Industry
+                      <strong>{holding.industry || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      MIC
+                      <strong>{holding.mic || "—"}</strong>
+                    </div>
+                    <div className="holding-detail">
+                      Link
+                      <strong>
+                        {holding.href ? (
+                          <a href={holding.href} target="_blank" rel="noreferrer">
+                            Open
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </strong>
+                    </div>
                   </div>
-                  <div className="holding-detail">
-                    Symbol
-                    <strong>{holding.symbol || "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    ISIN
-                    <strong>{holding.isin || "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Account
-                    <strong>{`${accountLabel}${accountType}`}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Shares
-                    <strong>{holding.shares.toFixed(2)}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Cost per share
-                    <strong>
-                      {costPerSharePrimary}
-                      {costPerShareSecondary ? ` (${costPerShareSecondary})` : ""}
-                    </strong>
-                  </div>
-                  <div className="holding-detail">
-                    Total cost
-                    <strong>
-                      {totalCostPrimary}
-                      {totalCostSecondary ? ` (${totalCostSecondary})` : ""}
-                    </strong>
-                  </div>
-                  <div className="holding-detail">
-                    Fee
-                    <strong>
-                      {feePrimary}
-                      {feeSecondary ? ` (${feeSecondary})` : ""}
-                    </strong>
-                  </div>
-                  <div className="holding-detail">
-                    Currency
-                    <strong>{holding.currency || "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Buy FX
-                    <strong>{fxRate ? fxRate.toFixed(6) : "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Acquired
-                    <strong>{formatDate(holding.acquired_at)}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Last price
-                    <strong>{lastPriceText}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Last price at
-                    <strong>{formatDateTime(holding.last_snapshot_at)}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Type
-                    <strong>{holding.asset_type || "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Sector
-                    <strong>{holding.sector || "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Industry
-                    <strong>{holding.industry || "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    MIC
-                    <strong>{holding.mic || "—"}</strong>
-                  </div>
-                  <div className="holding-detail">
-                    Link
-                    <strong>
-                      {holding.href ? (
-                        <a href={holding.href} target="_blank" rel="noreferrer">
-                          Open
-                        </a>
-                      ) : (
-                        "—"
-                      )}
-                    </strong>
-                  </div>
-                </div>
-                <div className="symbol-modal-footer">
                   <div className="holding-modal-actions">
                     <button
                       type="button"
-                      className="icon-button"
-                      title="Edit holding"
+                      className="button compact"
                       onClick={() => {
                         queueHoldingReturn(holding);
                         setHoldingFormFromHolding(holding);
@@ -5036,12 +5058,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         setShowAddHoldingModal(true);
                       }}
                     >
-                      ✏️
+                      Edit holding
                     </button>
                     <button
                       type="button"
-                      className="icon-button"
-                      title="Duplicate holding"
+                      className="button compact"
                       onClick={() => {
                         queueHoldingReturn(holding);
                         setHoldingFormFromHolding(holding);
@@ -5049,51 +5070,62 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         setShowAddHoldingModal(true);
                       }}
                     >
-                      ⧉
+                      Duplicate holding
                     </button>
                     <button
                       type="button"
-                      className="icon-button"
-                      title="Buy more"
+                      className="button compact"
                       onClick={() => {
                         queueHoldingReturn(holding);
                         openBuyModal(holding);
                       }}
                     >
-                      🛒
+                      Buy more
                     </button>
                     <button
                       type="button"
-                      className="icon-button"
-                      title="Sell"
+                      className="button compact"
                       onClick={() => {
                         queueHoldingReturn(holding);
                         openSellModal(holding);
                       }}
                     >
-                      💸
+                      Sell some
                     </button>
                     <button
                       type="button"
-                      className="icon-button"
-                      title="Remove and refund"
+                      className="button compact"
+                      disabled={!canAdjustCash}
+                      onClick={() => {
+                        if (!holdingAccount) {
+                          setStatus({ kind: "error", message: "Account is missing for this holding" });
+                          return;
+                        }
+                        queueHoldingReturn(holding);
+                        openCashModal(holdingAccount, "add", "Dividend");
+                      }}
+                    >
+                      Add dividend/interest
+                    </button>
+                    <button
+                      type="button"
+                      className="button compact"
                       disabled={deletingId === holding.id}
                       onClick={() => {
                         openHoldingConfirm(holding, "refund");
                       }}
                     >
-                      ↩️
+                      Remove and refund
                     </button>
                     <button
                       type="button"
-                      className="icon-button"
-                      title="Delete"
+                      className="button compact danger"
                       disabled={deletingId === holding.id}
                       onClick={() => {
                         openHoldingConfirm(holding, "delete");
                       }}
                     >
-                      🗑️
+                      Delete
                     </button>
                   </div>
                 </div>
@@ -5145,7 +5177,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <p className="confirm-warning">
                     {mode === "refund"
                       ? "This will remove the holding and refund its cost back to cash. This action is irreversible."
-                      : "This will permanently delete the holding. This action is irreversible."}
+                      : "This will permanently delete the holding. No cost back will be refunded to the account. This action is irreversible."}
                   </p>
                   <div className="confirm-details">
                     <span className="pill ghost">
@@ -5310,8 +5342,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           </div>
         </div>
       )}
-      {status.kind === "error" && status.message && (
-        <div className="toast toast-error" role="alert">
+      {status.kind !== "idle" && status.message && (
+        <div
+          className={`toast toast-${status.kind}`}
+          role={status.kind === "error" ? "alert" : "status"}
+          aria-live={status.kind === "error" ? "assertive" : "polite"}
+        >
           {status.message}
         </div>
       )}

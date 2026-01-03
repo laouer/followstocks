@@ -1037,6 +1037,13 @@ g.highcharts-axis-labels.highcharts-xaxis-labels > text {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.holding-modal-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 200px;
+  gap: 16px;
+  align-items: start;
+}
+
 .holding-detail {
   display: flex;
   flex-direction: column;
@@ -1053,8 +1060,14 @@ g.highcharts-axis-labels.highcharts-xaxis-labels > text {
 
 .holding-modal-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
+  align-items: stretch;
+}
+
+.holding-modal-actions .button {
+  width: 100%;
+  text-align: center;
 }
 
 .symbol-modal-body input {
@@ -1237,6 +1250,16 @@ g.highcharts-axis-labels.highcharts-xaxis-labels > text {
   color: #ffb16f;
 }
 
+.toast-success {
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #c9ffd8;
+}
+
+.toast-loading {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--text);
+}
+
 @media (max-width: 1200px) {
   .sim-grid {
     grid-template-columns: 1fr;
@@ -1277,6 +1300,20 @@ g.highcharts-axis-labels.highcharts-xaxis-labels > text {
   .sim-block label select {
     padding: 8px 10px;
     font-size: 13px;
+  }
+
+  .holding-modal-content {
+    grid-template-columns: 1fr;
+  }
+
+  .holding-modal-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .holding-modal-actions .button {
+    width: auto;
   }
 
   .sim-card-term .sim-grid {
