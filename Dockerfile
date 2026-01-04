@@ -9,7 +9,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---------- Backend deps build ----------
-FROM python:3.10-slim AS backend-builder
+FROM python:3.14-slim AS backend-builder
 WORKDIR /app/backend
 ENV PIP_NO_CACHE_DIR=1 \
     PIPENV_VENV_IN_PROJECT=1 \
@@ -33,7 +33,7 @@ RUN find .venv -type d -name "__pycache__" -exec rm -rf '{}' + \
     && find .venv -type f -name "*.so" -exec strip --strip-unneeded '{}' + || true
 
 # ---------- Backend runtime ----------
-FROM python:3.10-slim
+FROM python:3.14-slim
 WORKDIR /app/backend
 
 ENV VIRTUAL_ENV=/app/backend/.venv \

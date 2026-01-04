@@ -15,6 +15,7 @@ Persist SQLite data locally:
 ```bash
 touch data.db
 docker run --name followstocks \
+  --rm \
   -p 8000:8000 -p 4173:4173 \
   -v "$(pwd)/data.db:/app/backend/data.db" \
   meanouar/followstocks

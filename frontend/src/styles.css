@@ -1046,6 +1046,81 @@ g.highcharts-axis-labels.highcharts-xaxis-labels > text {
   padding: 0;
 }
 
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 320;
+}
+
+.help-highlight {
+  position: fixed;
+  border-radius: 14px;
+  border: 2px solid rgba(34, 197, 94, 0.9);
+  box-shadow:
+    0 0 0 9999px rgba(6, 12, 22, 0.72),
+    0 0 18px rgba(34, 197, 94, 0.45);
+  pointer-events: none;
+}
+
+.help-card {
+  position: fixed;
+  background: #0c1224;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  padding: 16px;
+  color: var(--text);
+  max-width: min(320px, calc(100vw - 32px));
+}
+
+.help-title {
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+.help-body {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.help-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.help-step-count {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.button.help-trigger {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.button.help-trigger:hover,
+.button.help-trigger:focus-visible {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.help-target {
+  position: relative;
+  z-index: 190;
+  box-shadow:
+    0 0 0 2px rgba(34, 197, 94, 0.6),
+    0 8px 24px rgba(34, 197, 94, 0.25);
+}
+
 
 .symbol-modal-header {
   display: flex;

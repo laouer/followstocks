@@ -22,3 +22,5 @@ backend/data.db-journal
 .env.*
 
 npm-debug.log*
+pyenv-compat-check.sh
+.python-version

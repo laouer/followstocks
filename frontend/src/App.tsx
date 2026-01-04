@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from "react";
 import Highcharts from "highcharts";
 import HighchartsDrilldown from "highcharts/modules/drilldown";
 import HighchartsReact from "highcharts-react-official";
@@ -85,6 +85,22 @@ type AccountRow = {
 };
 type AuthMode = "login" | "register";
 type ChartGroupBy = "holding" | "account" | "asset_type" | "sector" | "industry";
+type HelpTargetRect = {
+  top: number;
+  left: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+};
+type TourStep = {
+  id: string;
+  title: string;
+  body: string;
+  targetRef: RefObject<HTMLElement>;
+  requiresAccountModal?: boolean;
+  requiresAddHoldingModal?: boolean;
+};
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const BAR_VALUE_LABEL_ROTATION = -45;
@@ -295,6 +311,9 @@ function App() {
 
   const [showSymbolModal, setShowSymbolModal] = useState(false);
   const [showAddHoldingModal, setShowAddHoldingModal] = useState(false);
+  const [isTourActive, setIsTourActive] = useState(false);
+  const [tourStepIndex, setTourStepIndex] = useState(0);
+  const [tourTargetRect, setTourTargetRect] = useState<HelpTargetRect | null>(null);
   const [symbolSearchTerm, setSymbolSearchTerm] = useState("");
   const [editingHoldingId, setEditingHoldingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -355,12 +374,159 @@ function App() {
     executed_at: formatDateInput(),
     fx_rate: "",
   });
+  const addAccountButtonRef = useRef<HTMLButtonElement | null>(null);
+  const accountSelectRef = useRef<HTMLSelectElement | null>(null);
+  const accountNameInputRef = useRef<HTMLInputElement | null>(null);
+  const accountTypeInputRef = useRef<HTMLInputElement | null>(null);
+  const accountOpenedAtInputRef = useRef<HTMLInputElement | null>(null);
+  const accountLiquidityInputRef = useRef<HTMLInputElement | null>(null);
+  const accountContributedInputRef = useRef<HTMLInputElement | null>(null);
+  const accountSaveButtonRef = useRef<HTMLButtonElement | null>(null);
+  const symbolInputRef = useRef<HTMLInputElement | null>(null);
+  const searchShareButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sharesInputRef = useRef<HTMLInputElement | null>(null);
+  const costBasisInputRef = useRef<HTMLInputElement | null>(null);
+  const acquisitionFeeInputRef = useRef<HTMLInputElement | null>(null);
+  const currencySelectRef = useRef<HTMLSelectElement | null>(null);
+  const manualPriceToggleRef = useRef<HTMLInputElement | null>(null);
+  const manualLastPriceInputRef = useRef<HTMLInputElement | null>(null);
+  const manualLastPriceAtInputRef = useRef<HTMLInputElement | null>(null);
+  const saveHoldingButtonRef = useRef<HTMLButtonElement | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const yfinanceStatusRef = useRef<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [backupImportTarget, setBackupImportTarget] = useState<File | null>(null);
   const includeAllRef = useRef<HTMLInputElement | null>(null);
+  const tourOpenedHoldingModalRef = useRef(false);
+  const tourOpenedAccountModalRef = useRef(false);
+  const tourSteps: TourStep[] = [
+    {
+      id: "account-create-start",
+      title: "Create an account",
+      body: "Click + Add in Accounts to open the account creation form.",
+      targetRef: addAccountButtonRef,
+    },
+    {
+      id: "account-name",
+      title: "Name the account",
+      body: "Give the account a clear name (Brokerage, PEA, etc.).",
+      targetRef: accountNameInputRef,
+      requiresAccountModal: true,
+    },
+    {
+      id: "account-type",
+      title: "Pick a type",
+      body: "Optional: choose an account type for grouping.",
+      targetRef: accountTypeInputRef,
+      requiresAccountModal: true,
+    },
+    {
+      id: "account-opened",
+      title: "Set the opened date",
+      body: "This date is used for performance calculations.",
+      targetRef: accountOpenedAtInputRef,
+      requiresAccountModal: true,
+    },
+    {
+      id: "account-cash",
+      title: "Add available cash",
+      body: "Enter enough cash to cover your purchase.",
+      targetRef: accountLiquidityInputRef,
+      requiresAccountModal: true,
+    },
+    {
+      id: "account-contributed",
+      title: "Add contributions",
+      body: "Optional: track total contributions for better performance metrics.",
+      targetRef: accountContributedInputRef,
+      requiresAccountModal: true,
+    },
+    {
+      id: "account-save",
+      title: "Save the account",
+      body: "Save to make it available for new holdings.",
+      targetRef: accountSaveButtonRef,
+      requiresAccountModal: true,
+    },
+    {
+      id: "account-select",
+      title: "Select the account",
+      body: "Choose the account that will hold the shares, or create one with enough cash.",
+      targetRef: accountSelectRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "symbol",
+      title: "Pick a symbol",
+      body: "Type a ticker like AAPL or search for the instrument name.",
+      targetRef: symbolInputRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "search",
+      title: "Search the instrument",
+      body: "Click Search share to fetch symbol suggestions.",
+      targetRef: searchShareButtonRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "shares",
+      title: "Enter shares",
+      body: "Enter the number of shares for this lot.",
+      targetRef: sharesInputRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "cost-basis",
+      title: "Enter cost per share",
+      body: "Add the purchase price per share.",
+      targetRef: costBasisInputRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "fees",
+      title: "Add fees",
+      body: "Optional: add fees to compute the PRU for this lot.",
+      targetRef: acquisitionFeeInputRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "currency",
+      title: "Select currency",
+      body: "Choose the holding currency.",
+      targetRef: currencySelectRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "manual-price",
+      title: "Manual last price",
+      body: "Enable this for instruments without live quotes, then enter the last price and update time.",
+      targetRef: manualPriceToggleRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "manual-last-price",
+      title: "Enter last price",
+      body: "Add the latest known price per share.",
+      targetRef: manualLastPriceInputRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "manual-last-price-at",
+      title: "Set the last update time",
+      body: "Use the time of the price you entered.",
+      targetRef: manualLastPriceAtInputRef,
+      requiresAddHoldingModal: true,
+    },
+    {
+      id: "save",
+      title: "Save the holding",
+      body: "Click Save holding to add the position to your portfolio.",
+      targetRef: saveHoldingButtonRef,
+      requiresAddHoldingModal: true,
+    },
+  ];
 
   useEffect(() => {
     if (!isUserMenuOpen) return undefined;
@@ -397,6 +563,159 @@ function App() {
   const isAuthed = Boolean(authToken);
   const userDisplayEmail = currentUser?.email || "Signed in";
   const userInitials = getInitials(currentUser?.email);
+  const currentTourStep = isTourActive ? tourSteps[tourStepIndex] : null;
+
+  const startTour = () => {
+    tourOpenedHoldingModalRef.current = false;
+    tourOpenedAccountModalRef.current = false;
+    setTourStepIndex(0);
+    setIsTourActive(true);
+  };
+
+  const endTour = () => {
+    setIsTourActive(false);
+    setTourStepIndex(0);
+    setTourTargetRect(null);
+    if (tourOpenedHoldingModalRef.current) {
+      setShowAddHoldingModal(false);
+    }
+    if (tourOpenedAccountModalRef.current) {
+      setShowAccountModal(false);
+    }
+    tourOpenedHoldingModalRef.current = false;
+    tourOpenedAccountModalRef.current = false;
+  };
+
+  const goToTourStep = (nextIndex: number) => {
+    const clamped = Math.min(Math.max(nextIndex, 0), tourSteps.length - 1);
+    setTourStepIndex(clamped);
+  };
+
+  useEffect(() => {
+    if (!isAuthed && isTourActive) {
+      endTour();
+    }
+  }, [isAuthed, isTourActive]);
+
+  useEffect(() => {
+    if (!isTourActive) return;
+    const step = tourSteps[tourStepIndex];
+    const shouldEnableManualPrice =
+      step?.id === "manual-price" ||
+      step?.id === "manual-last-price" ||
+      step?.id === "manual-last-price-at";
+    if (step?.requiresAccountModal && !showAccountModal) {
+      tourOpenedAccountModalRef.current = true;
+      setAccountForm({
+        name: "",
+        account_type: "",
+        liquidity: "",
+        manual_invested: "",
+        created_at: formatDateInput(),
+      });
+      setEditingAccountId(null);
+      setShowAccountModal(true);
+    } else if (
+      !step?.requiresAccountModal &&
+      tourOpenedAccountModalRef.current &&
+      showAccountModal
+    ) {
+      setShowAccountModal(false);
+      tourOpenedAccountModalRef.current = false;
+    }
+    if (step?.requiresAddHoldingModal && !showAddHoldingModal) {
+      tourOpenedHoldingModalRef.current = true;
+      setShowAddHoldingModal(true);
+    } else if (
+      !step?.requiresAddHoldingModal &&
+      tourOpenedHoldingModalRef.current &&
+      showAddHoldingModal
+    ) {
+      setShowAddHoldingModal(false);
+      tourOpenedHoldingModalRef.current = false;
+    }
+    if (shouldEnableManualPrice && !holdingForm.manualPriceEnabled) {
+      setHoldingForm((prev) => ({
+        ...prev,
+        manualPriceEnabled: true,
+      }));
+    }
+  }, [isTourActive, tourStepIndex, showAddHoldingModal, showAccountModal, holdingForm.manualPriceEnabled]);
+
+  useEffect(() => {
+    if (!isTourActive) {
+      setTourTargetRect(null);
+      return;
+    }
+    const step = tourSteps[tourStepIndex];
+    const update = () => {
+      const rect = step?.targetRef.current?.getBoundingClientRect();
+      if (!rect) {
+        setTourTargetRect(null);
+        return;
+      }
+      setTourTargetRect({
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      });
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        endTour();
+      }
+    };
+    step?.targetRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const raf = window.requestAnimationFrame(update);
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isTourActive, tourStepIndex, showAddHoldingModal, showAccountModal, holdingForm.manualPriceEnabled]);
+
+  const tourCardStyle = useMemo(() => {
+    if (typeof window === "undefined") return undefined;
+    const padding = 16;
+    const cardWidth = Math.min(320, window.innerWidth - padding * 2);
+    const cardHeight = 210;
+    if (!tourTargetRect) {
+      return {
+        top: Math.max(padding, (window.innerHeight - cardHeight) / 2),
+        left: Math.max(padding, (window.innerWidth - cardWidth) / 2),
+        width: cardWidth,
+      };
+    }
+    const spaceBelow = window.innerHeight - tourTargetRect.bottom;
+    const top =
+      spaceBelow > cardHeight
+        ? tourTargetRect.bottom + 12
+        : Math.max(padding, tourTargetRect.top - cardHeight - 12);
+    const leftPreferred = tourTargetRect.right - cardWidth;
+    const left = Math.min(
+      Math.max(padding, leftPreferred),
+      window.innerWidth - padding - cardWidth
+    );
+    return { top, left, width: cardWidth };
+  }, [tourTargetRect]);
+
+  const tourHighlightStyle = useMemo(() => {
+    if (!tourTargetRect) return undefined;
+    const padding = 6;
+    return {
+      top: tourTargetRect.top - padding,
+      left: tourTargetRect.left - padding,
+      width: tourTargetRect.width + padding * 2,
+      height: tourTargetRect.height + padding * 2,
+    };
+  }, [tourTargetRect]);
 
   const convertAmount = (
     value: number | null | undefined,
@@ -507,45 +826,16 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   }, [chartHoldings, fxRates, summary]);
 
   const selectedLiquidity = useMemo(() => {
-    if (!chartHoldings.length) {
-      if (!accounts.length) return null;
-      return accounts.reduce((sum, account) => sum + (account.liquidity || 0), 0);
-    }
-    const accountIds = new Set<number>();
-    chartHoldings.forEach((holding) => {
-      const accountId = holding.account_id ?? holding.account?.id;
-      if (accountId) {
-        accountIds.add(accountId);
-      }
-    });
-    if (!accountIds.size) return null;
-    return accounts.reduce(
-      (sum, account) => (accountIds.has(account.id) ? sum + (account.liquidity || 0) : sum),
-      0
-    );
-  }, [accounts, chartHoldings]);
+    if (!accounts.length) return null;
+    return accounts.reduce((sum, account) => sum + (account.liquidity || 0), 0);
+  }, [accounts]);
   const selectedCapitalContributed = useMemo(() => {
-    if (!chartHoldings.length) {
-      if (!accounts.length) return null;
-      return accounts.reduce(
-        (sum, account) => sum + (account.manual_invested || 0),
-        0
-      );
-    }
-    const accountIds = new Set<number>();
-    chartHoldings.forEach((holding) => {
-      const accountId = holding.account_id ?? holding.account?.id;
-      if (accountId) {
-        accountIds.add(accountId);
-      }
-    });
-    if (!accountIds.size) return null;
+    if (!accounts.length) return null;
     return accounts.reduce(
-      (sum, account) =>
-        accountIds.has(account.id) ? sum + (account.manual_invested || 0) : sum,
+      (sum, account) => sum + (account.manual_invested || 0),
       0
     );
-  }, [accounts, chartHoldings]);
+  }, [accounts]);
   const cashPreview = useMemo(() => {
     if (!cashTargetAccount) return null;
     const amount = cashForm.amount === "" ? null : Number(cashForm.amount);
@@ -3018,6 +3308,21 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         <button
                           type="button"
                           className="user-menu-item"
+                          aria-pressed={isTourActive}
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            if (isTourActive) {
+                              endTour();
+                            } else {
+                              startTour();
+                            }
+                          }}
+                        >
+                          {isTourActive ? "End tour" : "Start tour"}
+                        </button>
+                        <button
+                          type="button"
+                          className="user-menu-item"
                           onClick={() => {
                             setIsUserMenuOpen(false);
                             handleExportBackup();
@@ -3275,7 +3580,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         />
                         <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
                       </svg>
-                    ) : (
+                  ) : (
                       <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path
                           d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"
@@ -3296,9 +3601,10 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       </svg>
                     )}
                   </button>
-                                    <button
+                  <button
                     type="button"
                     className="button primary compact"
+                    ref={addAccountButtonRef}
                       onClick={() => {
                         setAccountForm({
                           name: "",
@@ -3828,6 +4134,53 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         )}
       </main>
 
+      {isTourActive && currentTourStep && (
+        <div className="help-overlay" role="presentation" onClick={endTour}>
+          {tourTargetRect && (
+            <div className="help-highlight" style={tourHighlightStyle} />
+          )}
+          <div
+            className="help-card"
+            role="dialog"
+            aria-labelledby="tour-step-title"
+            aria-describedby="tour-step-body"
+            style={tourCardStyle}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="help-title" id="tour-step-title">
+              {currentTourStep.title}
+            </p>
+            <p className="help-body" id="tour-step-body">
+              {currentTourStep.body}
+            </p>
+            <div className="help-controls">
+              <button
+                type="button"
+                className="button compact"
+                disabled={tourStepIndex === 0}
+                onClick={() => goToTourStep(tourStepIndex - 1)}
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                className="button compact primary"
+                onClick={() =>
+                  tourStepIndex === tourSteps.length - 1
+                    ? endTour()
+                    : goToTourStep(tourStepIndex + 1)
+                }
+              >
+                {tourStepIndex === tourSteps.length - 1 ? "Finish" : "Next"}
+              </button>
+            </div>
+            <p className="help-step-count">
+              Step {tourStepIndex + 1} of {tourSteps.length}
+            </p>
+          </div>
+        </div>
+      )}
+
       {showAddHoldingModal && (
         <div
           className="symbol-modal-backdrop"
@@ -3861,6 +4214,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   Account (to hold)
                   <div className="account-select">
                     <select
+                      ref={accountSelectRef}
                       value={holdingForm.account_id}
                       onChange={(e) =>
                         setHoldingForm((prev) => ({
@@ -3905,6 +4259,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       required
                       placeholder="AAPL"
                       autoComplete="off"
+                      ref={symbolInputRef}
                       value={holdingForm.symbol}
                     onChange={(e) => {
                       setHoldingForm((prev) => ({
@@ -4043,6 +4398,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     required
                     type="number"
                     step="any"
+                    ref={sharesInputRef}
                     value={holdingForm.shares}
                     onChange={(e) =>
                       setHoldingForm((prev) => ({
@@ -4058,6 +4414,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     required
                     type="number"
                     step="any"
+                    ref={costBasisInputRef}
                     value={holdingForm.cost_basis}
                     onChange={(e) =>
                       setHoldingForm((prev) => ({
@@ -4073,6 +4430,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     type="number"
                     step="any"
                     min="0"
+                    ref={acquisitionFeeInputRef}
                     value={holdingForm.acquisition_fee_value}
                     onChange={(e) =>
                       setHoldingForm((prev) => ({
@@ -4085,6 +4443,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 <label>
                   Currency
                   <select
+                    ref={currencySelectRef}
                     value={holdingForm.currency}
                     onChange={(e) =>
                       setHoldingForm((prev) => ({
@@ -4126,6 +4485,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 <label className="inline-column-grid" >
                   <input
                     type="checkbox"
+                    ref={manualPriceToggleRef}
                     checked={holdingForm.manualPriceEnabled}
                     onChange={(e) =>
                       setHoldingForm((prev) => ({
@@ -4145,6 +4505,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                         type="number"
                         step="any"
                         placeholder="Enter latest price"
+                        ref={manualLastPriceInputRef}
                         value={holdingForm.manualLastPrice}
                         onChange={(e) =>
                           setHoldingForm((prev) => ({
@@ -4158,6 +4519,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       Last update
                       <input
                         type="datetime-local"
+                        ref={manualLastPriceAtInputRef}
                         value={holdingForm.manualLastPriceAt}
                         onChange={(e) =>
                           setHoldingForm((prev) => ({
@@ -4176,6 +4538,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <button
                     type="button"
                     className="button primary"
+                    ref={searchShareButtonRef}
                     onClick={() => {
                       setSymbolSearchTerm(holdingForm.symbol);
                       setShowSymbolModal(true);
@@ -4195,7 +4558,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   >
                     Cancel
                   </button>
-                  <button type="submit" className="button primary">
+                  <button
+                    type="submit"
+                    className="button primary"
+                    ref={saveHoldingButtonRef}
+                  >
                     {editingHoldingId ? "Save changes" : "Save holding"}
                   </button>
                 </div>
@@ -4239,6 +4606,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <input
                     required
                     placeholder="Compte titres"
+                    ref={accountNameInputRef}
                     value={accountForm.name}
                     onChange={(e) =>
                       setAccountForm((prev) => ({
@@ -4253,6 +4621,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <input
                     list="account-type-list"
                     placeholder="PEA, Assurance vie"
+                    ref={accountTypeInputRef}
                     value={accountForm.account_type}
                     onChange={(e) =>
                       setAccountForm((prev) => ({
@@ -4276,6 +4645,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   <input
                     type="date"
                     required
+                    ref={accountOpenedAtInputRef}
                     value={accountForm.created_at}
                     onChange={(e) =>
                       setAccountForm((prev) => ({
@@ -4295,6 +4665,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     step="any"
                     min="0"
                     placeholder="0"
+                    ref={accountLiquidityInputRef}
                     value={accountForm.liquidity}
                     onChange={(e) =>
                       setAccountForm((prev) => ({
@@ -4312,6 +4683,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     step="any"
                     min="0"
                     placeholder="0"
+                    ref={accountContributedInputRef}
                     value={accountForm.manual_invested}
                     onChange={(e) =>
                       setAccountForm((prev) => ({
@@ -4332,7 +4704,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   >
                     Cancel
                   </button>
-                  <button type="submit" className="button primary">
+                  <button
+                    type="submit"
+                    className="button primary"
+                    ref={accountSaveButtonRef}
+                  >
                     {editingAccountId ? "Save changes" : "Save account"}
                   </button>
                 </div>
