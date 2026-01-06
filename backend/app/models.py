@@ -22,6 +22,7 @@ class User(Base):
     cash_transactions = relationship(
         "CashTransaction", back_populates="user", cascade="all, delete-orphan"
     )
+    placements = relationship("Placement", back_populates="user", cascade="all, delete-orphan")
 
 
 class Account(Base):
@@ -38,6 +39,7 @@ class Account(Base):
 
     user = relationship("User", back_populates="accounts")
     holdings = relationship("Holding", back_populates="account", cascade="all, delete-orphan")
+    placements = relationship("Placement", back_populates="account", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="account", cascade="all, delete-orphan")
     cash_transactions = relationship(
         "CashTransaction", back_populates="account", cascade="all, delete-orphan"
@@ -111,3 +113,46 @@ class CashTransaction(Base):
     user = relationship("User", back_populates="cash_transactions")
     account = relationship("Account", back_populates="cash_transactions")
 
+
+class Placement(Base):
+    __tablename__ = "placements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    placement_type = Column(String, nullable=True)
+    sector = Column(String, nullable=True)
+    industry = Column(String, nullable=True)
+    currency = Column(String, default="EUR", nullable=False)
+    initial_value = Column(Float, nullable=True)
+    initial_recorded_at = Column(DateTime, nullable=True)
+    total_contributions = Column(Float, nullable=True)
+    total_withdrawals = Column(Float, nullable=True)
+    total_interests = Column(Float, nullable=True)
+    total_fees = Column(Float, nullable=True)
+    current_value = Column(Float, nullable=True)
+    last_snapshot_at = Column(DateTime, nullable=True)
+    notes = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="placements")
+    account = relationship("Account", back_populates="placements")
+    snapshots = relationship(
+        "PlacementSnapshot", back_populates="placement", cascade="all, delete-orphan"
+    )
+
+
+class PlacementSnapshot(Base):
+    __tablename__ = "placement_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    placement_id = Column(Integer, ForeignKey("placements.id"), nullable=False, index=True)
+    entry_kind = Column(String, default="VALUE", nullable=False)
+    value = Column(Float, nullable=False)
+    recorded_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    placement = relationship("Placement", back_populates="snapshots")

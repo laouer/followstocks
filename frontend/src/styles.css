@@ -766,6 +766,26 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
   grid-template-columns: 0.8fr 1fr 1fr 1fr 0.8fr 0.8fr 0.8fr 0.6fr;
 }
 
+.placements-table .table-head,
+.placements-table .table-row {
+  grid-template-columns: 44px 1fr 1fr 0.9fr 0.9fr 0.8fr 0.9fr 0.9fr 0.6fr;
+}
+
+.snapshot-table .table-head,
+.snapshot-table .table-row {
+  grid-template-columns: 0.9fr 1fr 1fr 0.6fr;
+}
+
+.snapshot-table {
+  overflow: hidden;
+}
+
+.snapshot-table .table-body {
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .account-actions {
   display: flex;
   align-items: center;

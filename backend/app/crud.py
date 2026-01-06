@@ -403,9 +403,239 @@ def get_holdings(db: Session, user_id: int) -> List[models.Holding]:
     )
 
 
+def get_placements(db: Session, user_id: int) -> List[models.Placement]:
+    return (
+        db.query(models.Placement)
+        .filter(models.Placement.user_id == user_id)
+        .order_by(models.Placement.name.asc())
+        .all()
+    )
+
+
+def get_placement(db: Session, user_id: int, placement_id: int) -> Optional[models.Placement]:
+    return (
+        db.query(models.Placement)
+        .filter(models.Placement.id == placement_id, models.Placement.user_id == user_id)
+        .first()
+    )
+
+
+def create_placement(db: Session, user_id: int, data: schemas.PlacementCreate) -> models.Placement:
+    placement = models.Placement(
+        user_id=user_id,
+        account_id=data.account_id,
+        name=data.name,
+        placement_type=data.placement_type,
+        sector=data.sector,
+        industry=data.industry,
+        currency=data.currency,
+        notes=data.notes,
+    )
+    db.add(placement)
+    db.commit()
+    db.refresh(placement)
+    if data.initial_value is not None:
+        snapshot_payload = schemas.PlacementSnapshotCreate(
+            entry_kind="INITIAL",
+            value=data.initial_value,
+            recorded_at=data.recorded_at,
+        )
+        add_placement_snapshot(db, placement, snapshot_payload)
+        db.refresh(placement)
+    return placement
+
+
+def update_placement(
+    db: Session, placement: models.Placement, data: schemas.PlacementUpdate
+) -> models.Placement:
+    updates = data.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(placement, field, value)
+    placement.updated_at = datetime.utcnow()
+    db.add(placement)
+    db.commit()
+    db.refresh(placement)
+    return placement
+
+
+def delete_placement(db: Session, placement: models.Placement) -> None:
+    db.delete(placement)
+    db.commit()
+
+
+def _recompute_placement_values(
+    db: Session,
+    placement: models.Placement,
+) -> models.Placement:
+    snapshots = (
+        db.query(models.PlacementSnapshot)
+        .filter(models.PlacementSnapshot.placement_id == placement.id)
+        .order_by(
+            models.PlacementSnapshot.recorded_at.asc(),
+            models.PlacementSnapshot.id.asc(),
+        )
+        .all()
+    )
+    if not snapshots:
+        placement.initial_value = None
+        placement.initial_recorded_at = None
+        placement.total_contributions = None
+        placement.total_withdrawals = None
+        placement.total_interests = None
+        placement.total_fees = None
+        placement.current_value = None
+        placement.last_snapshot_at = None
+        placement.updated_at = datetime.utcnow()
+        db.add(placement)
+        db.commit()
+        db.refresh(placement)
+        return placement
+
+    initial_snapshot = next(
+        (snapshot for snapshot in snapshots if snapshot.entry_kind == "INITIAL"),
+        None,
+    )
+    if not initial_snapshot:
+        initial_snapshot = next(
+            (snapshot for snapshot in snapshots if snapshot.entry_kind == "VALUE"),
+            None,
+        )
+    if initial_snapshot:
+        placement.initial_value = initial_snapshot.value
+        placement.initial_recorded_at = initial_snapshot.recorded_at
+    else:
+        placement.initial_value = None
+        placement.initial_recorded_at = None
+
+    current_value = None
+    total_contributions = 0.0
+    total_withdrawals = 0.0
+    total_interests = 0.0
+    total_fees = 0.0
+    for snapshot in snapshots:
+        entry_kind = (snapshot.entry_kind or "VALUE").upper()
+        if entry_kind in {"VALUE", "INITIAL"}:
+            current_value = snapshot.value
+        elif entry_kind == "INTEREST":
+            current_value = (current_value or 0.0) + snapshot.value
+            total_interests += snapshot.value
+        elif entry_kind == "FEE":
+            current_value = (current_value or 0.0) - snapshot.value
+            total_fees += snapshot.value
+        elif entry_kind == "CONTRIBUTION":
+            current_value = (current_value or 0.0) + snapshot.value
+            total_contributions += snapshot.value
+        elif entry_kind == "WITHDRAWAL":
+            current_value = (current_value or 0.0) - snapshot.value
+            total_withdrawals += snapshot.value
+    placement.current_value = current_value
+    placement.total_contributions = total_contributions if total_contributions > 0 else 0.0
+    placement.total_withdrawals = total_withdrawals if total_withdrawals > 0 else 0.0
+    placement.total_interests = total_interests if total_interests > 0 else 0.0
+    placement.total_fees = total_fees if total_fees > 0 else 0.0
+    placement.last_snapshot_at = snapshots[-1].recorded_at
+    placement.updated_at = datetime.utcnow()
+    db.add(placement)
+    db.commit()
+    db.refresh(placement)
+    return placement
+
+
+def add_placement_snapshot(
+    db: Session,
+    placement: models.Placement,
+    data: schemas.PlacementSnapshotCreate,
+) -> models.PlacementSnapshot:
+    entry_kind = (data.entry_kind or "VALUE").upper()
+    if entry_kind not in {"VALUE", "INITIAL"}:
+        has_value = (
+            db.query(models.PlacementSnapshot)
+            .filter(
+                models.PlacementSnapshot.placement_id == placement.id,
+                models.PlacementSnapshot.entry_kind.in_(["VALUE", "INITIAL"]),
+            )
+            .first()
+        )
+        if not has_value:
+            raise ValueError(
+                "Initial placement or value is required before interests, fees, contributions, or withdrawals"
+            )
+    recorded_at = data.recorded_at or datetime.utcnow()
+    snapshot = models.PlacementSnapshot(
+        placement_id=placement.id,
+        entry_kind=entry_kind,
+        value=data.value,
+        recorded_at=recorded_at,
+    )
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    _recompute_placement_values(db, placement)
+    return snapshot
+
+
+def update_placement_snapshot(
+    db: Session,
+    placement: models.Placement,
+    snapshot: models.PlacementSnapshot,
+    data: schemas.PlacementSnapshotUpdate,
+) -> models.PlacementSnapshot:
+    updates = data.model_dump(exclude_unset=True)
+    if "entry_kind" in updates and updates["entry_kind"]:
+        updates["entry_kind"] = updates["entry_kind"].upper()
+    entry_kind_next = updates.get("entry_kind", snapshot.entry_kind) or "VALUE"
+    if entry_kind_next not in {"VALUE", "INITIAL"}:
+        other_value = (
+            db.query(models.PlacementSnapshot)
+            .filter(
+                models.PlacementSnapshot.placement_id == placement.id,
+                models.PlacementSnapshot.entry_kind.in_(["VALUE", "INITIAL"]),
+                models.PlacementSnapshot.id != snapshot.id,
+            )
+            .first()
+        )
+        if not other_value:
+            raise ValueError(
+                "Initial placement or value is required before interests, fees, contributions, or withdrawals"
+            )
+    for field, value in updates.items():
+        setattr(snapshot, field, value)
+    snapshot.updated_at = datetime.utcnow()
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    _recompute_placement_values(db, placement)
+    return snapshot
+
+
+def delete_placement_snapshot(
+    db: Session,
+    placement: models.Placement,
+    snapshot: models.PlacementSnapshot,
+) -> None:
+    db.delete(snapshot)
+    db.commit()
+    _recompute_placement_values(db, placement)
+
+
+def get_placement_snapshots(
+    db: Session,
+    placement_id: int,
+    limit: int = 50,
+) -> List[models.PlacementSnapshot]:
+    return (
+        db.query(models.PlacementSnapshot)
+        .filter(models.PlacementSnapshot.placement_id == placement_id)
+        .order_by(models.PlacementSnapshot.recorded_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 def portfolio_summary(db: Session, user_id: int) -> schemas.PortfolioResponse:
     holdings = get_holdings_with_stats(db, user_id)
     accounts = get_accounts(db, user_id)
+    placements = get_placements(db, user_id)
     for account in accounts:
         if (account.liquidity or 0.0) < 0:
             raise ValueError(f"Account {account.name} has negative liquidity. Please adjust it.")
@@ -414,8 +644,26 @@ def portfolio_summary(db: Session, user_id: int) -> schemas.PortfolioResponse:
         h.shares * h.cost_basis + (h.acquisition_fee_value or 0)
         for h in holdings
     )
+    placement_values = []
+    placement_costs = []
+    for placement in placements:
+        if placement.current_value is None:
+            continue
+        placement_values.append(placement.current_value)
+        base = (
+            placement.initial_value
+            if placement.initial_value is not None
+            else placement.current_value
+        )
+        contributions = placement.total_contributions or 0.0
+        withdrawals = placement.total_withdrawals or 0.0
+        placement_costs.append(base + contributions - withdrawals)
+    if placement_costs:
+        total_cost += sum(placement_costs)
+
     market_values = [h.market_value for h in holdings if h.market_value is not None]
-    total_value = sum(market_values) if market_values else None
+    value_components = market_values + placement_values
+    total_value = sum(value_components) if value_components else None
 
     total_gain_abs = (total_value - total_cost) if total_value is not None else None
     total_gain_pct = (total_gain_abs / total_cost) if total_gain_abs is not None and total_cost > 0 else None
@@ -433,4 +681,9 @@ def portfolio_summary(db: Session, user_id: int) -> schemas.PortfolioResponse:
         hourly_change_abs=hourly_change_abs,
         hourly_change_pct=hourly_change_pct,
     )
-    return schemas.PortfolioResponse(summary=summary, holdings=holdings, accounts=accounts)
+    return schemas.PortfolioResponse(
+        summary=summary,
+        holdings=holdings,
+        accounts=accounts,
+        placements=placements,
+    )

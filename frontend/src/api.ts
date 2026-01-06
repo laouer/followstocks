@@ -29,6 +29,37 @@ export interface HoldingStats {
   hourly_change_pct: number | null;
 }
 
+export interface Placement {
+  id: number;
+  account_id?: number | null;
+  name: string;
+  placement_type?: string | null;
+  sector?: string | null;
+  industry?: string | null;
+  currency: string;
+  initial_value?: number | null;
+  initial_recorded_at?: string | null;
+  total_contributions?: number | null;
+  total_withdrawals?: number | null;
+  total_interests?: number | null;
+  total_fees?: number | null;
+  current_value?: number | null;
+  last_snapshot_at?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlacementSnapshot {
+  id: number;
+  placement_id: number;
+  entry_kind: "VALUE" | "INITIAL" | "INTEREST" | "FEE" | "CONTRIBUTION" | "WITHDRAWAL";
+  value: number;
+  recorded_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PortfolioSummary {
   total_cost: number;
   total_value: number | null;
@@ -48,6 +79,7 @@ export interface PortfolioResponse {
   summary: PortfolioSummary;
   holdings: HoldingStats[];
   accounts?: Account[];
+  placements?: Placement[];
   yfinance_status?: YahooFinanceStatus | null;
 }
 
@@ -230,6 +262,72 @@ export async function createHolding(payload: {
   acquired_at?: string;
 }) {
   return api.post("/holdings", payload);
+}
+
+export async function createPlacement(payload: {
+  account_id?: number;
+  name: string;
+  placement_type?: string;
+  sector?: string;
+  industry?: string;
+  currency?: string;
+  notes?: string;
+  initial_value?: number;
+  recorded_at?: string;
+}) {
+  return api.post<Placement>("/placements", payload);
+}
+
+export async function updatePlacement(
+  placementId: number,
+  payload: {
+    account_id?: number | null;
+    name?: string;
+    placement_type?: string;
+    sector?: string;
+    industry?: string;
+    currency?: string;
+    notes?: string;
+  }
+) {
+  return api.put<Placement>(`/placements/${placementId}`, payload);
+}
+
+export async function deletePlacement(placementId: number) {
+  return api.delete(`/placements/${placementId}`);
+}
+
+export async function fetchPlacementSnapshots(placementId: number, limit = 50) {
+  return api.get<PlacementSnapshot[]>(`/placements/${placementId}/snapshots`, {
+    params: { limit },
+  });
+}
+
+export async function addPlacementSnapshot(
+  placementId: number,
+  payload: {
+    value: number;
+    recorded_at?: string;
+    entry_kind?: "VALUE" | "INITIAL" | "INTEREST" | "FEE" | "CONTRIBUTION" | "WITHDRAWAL";
+  }
+) {
+  return api.post<Placement>(`/placements/${placementId}/snapshots`, payload);
+}
+
+export async function updatePlacementSnapshot(
+  placementId: number,
+  snapshotId: number,
+  payload: {
+    value?: number;
+    recorded_at?: string;
+    entry_kind?: "VALUE" | "INITIAL" | "INTEREST" | "FEE" | "CONTRIBUTION" | "WITHDRAWAL";
+  }
+) {
+  return api.put<Placement>(`/placements/${placementId}/snapshots/${snapshotId}`, payload);
+}
+
+export async function deletePlacementSnapshot(placementId: number, snapshotId: number) {
+  return api.delete(`/placements/${placementId}/snapshots/${snapshotId}`);
 }
 
 export interface EuronextQuote {

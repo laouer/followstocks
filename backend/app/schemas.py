@@ -4,6 +4,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CurrencyCode = Literal["USD", "EUR"]
+PlacementEntryKind = Literal["VALUE", "INITIAL", "INTEREST", "FEE", "CONTRIBUTION", "WITHDRAWAL"]
 
 
 class UserBase(BaseModel):
@@ -276,6 +277,108 @@ class HoldingStats(Holding):
     hourly_change_pct: Optional[float] = None
 
 
+class PlacementBase(BaseModel):
+    name: str = Field(..., min_length=1, description="Placement name")
+    account_id: Optional[int] = Field(None, description="Account id linked to this placement")
+    placement_type: Optional[str] = Field(None, description="Placement type")
+    sector: Optional[str] = Field(None, description="Placement sector")
+    industry: Optional[str] = Field(None, description="Placement industry")
+    currency: CurrencyCode = Field("EUR", description="Currency code (USD or EUR)")
+    notes: Optional[str] = Field(None, description="Optional notes")
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency_placement(cls, v: str) -> CurrencyCode:
+        upper = v.upper()
+        if upper not in {"USD", "EUR"}:
+            raise ValueError("Currency must be USD or EUR")
+        return upper  # type: ignore[return-value]
+
+    @field_validator("name", "placement_type", "sector", "industry", "notes", mode="before")
+    @classmethod
+    def strip_text_placement(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
+
+class PlacementCreate(PlacementBase):
+    initial_value: Optional[float] = Field(None, ge=0, description="Initial placement value")
+    recorded_at: Optional[datetime] = Field(None, description="Snapshot timestamp")
+
+
+class PlacementUpdate(BaseModel):
+    account_id: Optional[int] = Field(None, description="Account id")
+    name: Optional[str] = Field(None, min_length=1)
+    placement_type: Optional[str] = Field(None)
+    sector: Optional[str] = Field(None)
+    industry: Optional[str] = Field(None)
+    currency: Optional[CurrencyCode] = Field(None)
+    notes: Optional[str] = Field(None)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency_placement_update(cls, v: Optional[str]) -> Optional[CurrencyCode]:
+        if v is None:
+            return None
+        upper = v.upper()
+        if upper not in {"USD", "EUR"}:
+            raise ValueError("Currency must be USD or EUR")
+        return upper  # type: ignore[return-value]
+
+    @field_validator("name", "placement_type", "sector", "industry", "notes", mode="before")
+    @classmethod
+    def strip_text_placement_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
+
+class Placement(PlacementBase):
+    id: int
+    initial_value: Optional[float] = None
+    initial_recorded_at: Optional[datetime] = None
+    total_contributions: Optional[float] = None
+    total_withdrawals: Optional[float] = None
+    total_interests: Optional[float] = None
+    total_fees: Optional[float] = None
+    current_value: Optional[float] = None
+    last_snapshot_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PlacementSnapshotBase(BaseModel):
+    entry_kind: PlacementEntryKind = Field(
+        "VALUE", description="VALUE, INITIAL, INTEREST, FEE, CONTRIBUTION, or WITHDRAWAL"
+    )
+    value: float = Field(..., ge=0, description="Amount for this entry")
+    recorded_at: Optional[datetime] = Field(None, description="Snapshot timestamp")
+
+
+class PlacementSnapshotCreate(PlacementSnapshotBase):
+    pass
+
+
+class PlacementSnapshotUpdate(BaseModel):
+    entry_kind: Optional[PlacementEntryKind] = None
+    value: Optional[float] = Field(None, ge=0)
+    recorded_at: Optional[datetime] = None
+
+
+class PlacementSnapshot(PlacementSnapshotBase):
+    id: int
+    placement_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PortfolioSummary(BaseModel):
     total_cost: float
     total_value: Optional[float] = None
@@ -295,6 +398,7 @@ class PortfolioResponse(BaseModel):
     summary: PortfolioSummary
     holdings: List[HoldingStats]
     accounts: List[Account] = []
+    placements: List[Placement] = []
     yfinance_status: Optional[YahooFinanceStatus] = None
 
 

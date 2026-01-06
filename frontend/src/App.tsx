@@ -6,6 +6,8 @@ import FloatingSidebar from "./FloatingSidebar";
 import {
   PortfolioResponse,
   HoldingStats,
+  Placement,
+  PlacementSnapshot,
   Account,
   AuthUser,
   loginUser,
@@ -29,6 +31,13 @@ import {
   fetchFxRate,
   sellHolding,
   refundHolding,
+  createPlacement,
+  updatePlacement,
+  deletePlacement,
+  fetchPlacementSnapshots,
+  addPlacementSnapshot,
+  updatePlacementSnapshot,
+  deletePlacementSnapshot,
 } from "./api";
 
 const applyDrilldown =
@@ -76,9 +85,12 @@ type AccountSortField =
 type AccountRow = {
   account: Account;
   holdingsValue: number;
-  holdingsPercent: number | null;
+  placementsValue: number;
+  allocationValue: number;
+  allocationPercent: number | null;
   totalValue: number;
   holdingsCount: number;
+  placementsCount: number;
   manualInvested: number;
   performance: number;
   performanceRatio: number | null;
@@ -186,6 +198,7 @@ const CASH_REASON_DEFAULT = {
   add: "Contribution",
   withdraw: "Withdrawal",
 } as const;
+const PLACEMENT_TYPE_OPTIONS = ["Assurance vie", "Livret A", "LDD", "Compte a terme"];
 const LOSS_COLOR = "#fb7185";
 const YFINANCE_WARNING_FALLBACK =
   "Last prices are not updated because Yahoo Finance is unreachable (connection lost or blocked).";
@@ -329,6 +342,7 @@ function App() {
   const [plChartType, setPlChartType] = useState<"donut" | "bar">("bar");
   const [chartGroupBy, setChartGroupBy] = useState<ChartGroupBy>("holding");
   const [excludedHoldings, setExcludedHoldings] = useState<Set<number>>(new Set());
+  const [excludedPlacements, setExcludedPlacements] = useState<Set<number>>(new Set());
   const [accountForm, setAccountForm] = useState({
     name: "",
     account_type: "",
@@ -374,6 +388,39 @@ function App() {
     executed_at: formatDateInput(),
     fx_rate: "",
   });
+  const [placementForm, setPlacementForm] = useState({
+    account_id: "",
+    name: "",
+    placement_type: "",
+    sector: "",
+    industry: "",
+    currency: "EUR",
+    initial_value: "",
+    recorded_at: formatDateTimeLocal(),
+  });
+  const [showPlacementModal, setShowPlacementModal] = useState(false);
+  const [editingPlacementId, setEditingPlacementId] = useState<number | null>(null);
+  const [placementDeleteTarget, setPlacementDeleteTarget] = useState<Placement | null>(null);
+  const [placementHistoryTarget, setPlacementHistoryTarget] = useState<Placement | null>(null);
+  const [placementSnapshots, setPlacementSnapshots] = useState<PlacementSnapshot[]>([]);
+  const [placementSnapshotsLoading, setPlacementSnapshotsLoading] = useState(false);
+  const [placementChartTarget, setPlacementChartTarget] = useState<Placement | null>(null);
+  const [placementChartSnapshots, setPlacementChartSnapshots] = useState<PlacementSnapshot[]>([]);
+  const [placementChartLoading, setPlacementChartLoading] = useState(false);
+  const [placementSnapshotForm, setPlacementSnapshotForm] = useState({
+    value: "",
+    recorded_at: formatDateTimeLocal(),
+    entry_kind: "INTEREST" as
+      | "VALUE"
+      | "INITIAL"
+      | "INTEREST"
+      | "FEE"
+      | "CONTRIBUTION"
+      | "WITHDRAWAL",
+  });
+  const [editingPlacementSnapshotId, setEditingPlacementSnapshotId] = useState<number | null>(null);
+  const [deletingPlacementSnapshotId, setDeletingPlacementSnapshotId] = useState<number | null>(null);
+  const [deletingPlacementId, setDeletingPlacementId] = useState<number | null>(null);
   const addAccountButtonRef = useRef<HTMLButtonElement | null>(null);
   const accountSelectRef = useRef<HTMLSelectElement | null>(null);
   const accountNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -398,6 +445,7 @@ function App() {
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [backupImportTarget, setBackupImportTarget] = useState<File | null>(null);
   const includeAllRef = useRef<HTMLInputElement | null>(null);
+  const includeAllPlacementsRef = useRef<HTMLInputElement | null>(null);
   const tourOpenedHoldingModalRef = useRef(false);
   const tourOpenedAccountModalRef = useRef(false);
   const tourSteps: TourStep[] = [
@@ -541,7 +589,12 @@ function App() {
   }, [isUserMenuOpen]);
 
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
+  const placements = useMemo(() => portfolio?.placements ?? [], [portfolio]);
   const accounts = useMemo<Account[]>(() => portfolio?.accounts ?? [], [portfolio]);
+  const accountsById = useMemo(
+    () => new Map(accounts.map((account) => [account.id, account])),
+    [accounts]
+  );
   const defaultAccountId = useMemo(() => {
     if (!accounts.length) return null;
     const main = accounts.find((account) => account.name.toLowerCase() === "main");
@@ -558,12 +611,88 @@ function App() {
     () => holdings.filter((holding) => !excludedHoldings.has(holding.id)),
     [holdings, excludedHoldings]
   );
+  const chartPlacements = useMemo(
+    () => placements.filter((placement) => !excludedPlacements.has(placement.id)),
+    [placements, excludedPlacements]
+  );
   const summary = portfolio?.summary;
   const totalCurrency = DISPLAY_CURRENCY;
   const isAuthed = Boolean(authToken);
   const userDisplayEmail = currentUser?.email || "Signed in";
   const userInitials = getInitials(currentUser?.email);
   const currentTourStep = isTourActive ? tourSteps[tourStepIndex] : null;
+
+  useEffect(() => {
+    if (!placementHistoryTarget) {
+      setPlacementSnapshots([]);
+      setPlacementSnapshotsLoading(false);
+      return;
+    }
+    let active = true;
+    const loadSnapshots = async () => {
+      setPlacementSnapshotsLoading(true);
+      try {
+        const res = await fetchPlacementSnapshots(placementHistoryTarget.id);
+        if (!active) return;
+        setPlacementSnapshots(res.data);
+      } catch (err) {
+        if (!active) return;
+        const detail =
+          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+          "Failed to load placement history";
+        setPlacementSnapshots([]);
+        setStatus({ kind: "error", message: detail });
+      } finally {
+        if (active) {
+          setPlacementSnapshotsLoading(false);
+        }
+      }
+    };
+    loadSnapshots();
+    return () => {
+      active = false;
+    };
+  }, [placementHistoryTarget]);
+
+  useEffect(() => {
+    if (!placementChartTarget) {
+      setPlacementChartSnapshots([]);
+      setPlacementChartLoading(false);
+      return;
+    }
+    let active = true;
+    const loadSnapshots = async () => {
+      setPlacementChartLoading(true);
+      try {
+        const res = await fetchPlacementSnapshots(placementChartTarget.id, 500);
+        if (!active) return;
+        setPlacementChartSnapshots(res.data);
+      } catch (err) {
+        if (!active) return;
+        const detail =
+          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+          "Failed to load placement history";
+        setPlacementChartSnapshots([]);
+        setStatus({ kind: "error", message: detail });
+      } finally {
+        if (active) {
+          setPlacementChartLoading(false);
+        }
+      }
+    };
+    loadSnapshots();
+    return () => {
+      active = false;
+    };
+  }, [placementChartTarget]);
+
+  useEffect(() => {
+    if (!placementHistoryTarget) return;
+    const latest = placements.find((placement) => placement.id === placementHistoryTarget.id);
+    if (latest && latest !== placementHistoryTarget) {
+      setPlacementHistoryTarget(latest);
+    }
+  }, [placements, placementHistoryTarget]);
 
   const startTour = () => {
     tourOpenedHoldingModalRef.current = false;
@@ -773,6 +902,27 @@ function App() {
     setExcludedHoldings(new Set(holdings.map((holding) => holding.id)));
   };
 
+  const togglePlacementForCharts = (placementId: number) => {
+    setExcludedPlacements((prev) => {
+      const next = new Set(prev);
+      if (next.has(placementId)) {
+        next.delete(placementId);
+      } else {
+        next.add(placementId);
+      }
+      return next;
+    });
+  };
+
+  const setAllPlacementsForCharts = (included: boolean) => {
+    if (!placements.length) return;
+    if (included) {
+      setExcludedPlacements(new Set());
+      return;
+    }
+    setExcludedPlacements(new Set(placements.map((placement) => placement.id)));
+  };
+
   const getHoldingFeeValue = (holding: HoldingStats) =>
     holding.acquisition_fee_value ?? 0;
   const getHoldingTotalCost = (holding: HoldingStats) =>
@@ -787,6 +937,21 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   if (days <= 0) return null;
   const annualized = Math.pow(1 + gainPct, 365 / days) - 1;
   return annualized;
+};
+
+const computeAnnualizedReturnBetween = (
+  gainPct?: number | null,
+  startAt?: string | null,
+  endAt?: string | null
+) => {
+  if (gainPct === null || gainPct === undefined) return null;
+  if (!startAt || !endAt) return null;
+  const start = new Date(startAt).getTime();
+  const end = new Date(endAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  const days = (end - start) / (1000 * 60 * 60 * 24);
+  if (days <= 0) return null;
+  return Math.pow(1 + gainPct, 365 / days) - 1;
 };
 
   const enhancedSummary = useMemo(() => {
@@ -810,20 +975,52 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         marketValues.push(mv);
       }
     });
-    const total_value = marketValues.length ? marketValues.reduce((a, b) => a + b, 0) : null;
-    const total_gain_abs = total_value !== null ? total_value - total_cost : null;
+    const placementValues: number[] = [];
+    const placementCosts: number[] = [];
+    chartPlacements.forEach((placement) => {
+      const convertedValue = convertAmount(placement.current_value, placement.currency);
+      if (convertedValue !== null && convertedValue !== undefined) {
+        placementValues.push(convertedValue);
+        const base =
+          placement.initial_value !== null && placement.initial_value !== undefined
+            ? placement.initial_value
+            : placement.current_value;
+        const contributions = placement.total_contributions ?? 0;
+        const withdrawals = placement.total_withdrawals ?? 0;
+        const costBase = base + contributions - withdrawals;
+        const convertedCost = convertAmount(costBase, placement.currency);
+        if (convertedCost !== null && convertedCost !== undefined) {
+          placementCosts.push(convertedCost);
+        }
+      }
+    });
+    const placementsTotal = placementValues.length
+      ? placementValues.reduce((a, b) => a + b, 0)
+      : null;
+    const placementsCostTotal = placementCosts.length
+      ? placementCosts.reduce((a, b) => a + b, 0)
+      : null;
+    const holdingsTotal = marketValues.length ? marketValues.reduce((a, b) => a + b, 0) : null;
+    const total_value =
+      holdingsTotal !== null || placementsTotal !== null
+        ? (holdingsTotal ?? 0) + (placementsTotal ?? 0)
+        : null;
+    const total_gain_abs =
+      total_value !== null ? total_value - (total_cost + (placementsCostTotal ?? 0)) : null;
     const total_gain_pct =
-      total_gain_abs !== null && total_cost > 0 ? total_gain_abs / total_cost : null;
+      total_gain_abs !== null && total_cost + (placementsCostTotal ?? 0) > 0
+        ? total_gain_abs / (total_cost + (placementsCostTotal ?? 0))
+        : null;
 
     return {
-      total_cost,
+      total_cost: total_cost + (placementsCostTotal ?? 0),
       total_value,
       total_gain_abs,
       total_gain_pct,
       hourly_change_abs: summary?.hourly_change_abs ?? null,
       hourly_change_pct: summary?.hourly_change_pct ?? null,
     };
-  }, [chartHoldings, fxRates, summary]);
+  }, [chartHoldings, fxRates, summary, chartPlacements]);
 
   const selectedLiquidity = useMemo(() => {
     if (!accounts.length) return null;
@@ -843,6 +1040,25 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     const delta = cashForm.mode === "add" ? amount : -amount;
     return (cashTargetAccount.liquidity || 0) + delta;
   }, [cashForm.amount, cashForm.mode, cashTargetAccount]);
+
+  const resolvePlacementGroupLabel = (placement: Placement) => {
+    switch (chartGroupBy) {
+      case "account":
+        return (
+          (placement.account_id
+            ? accountsById.get(placement.account_id)?.name
+            : null) || "Uncategorized"
+        );
+      case "asset_type":
+        return placement.placement_type || "Uncategorized";
+      case "sector":
+        return placement.sector || "Uncategorized";
+      case "industry":
+        return placement.industry || "Uncategorized";
+      default:
+        return placement.name || "Placement";
+    }
+  };
 
   const allocationData = useMemo(() => {
     const resolveGroupLabel = (holding: HoldingStats) => {
@@ -873,6 +1089,8 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           label: string;
           y: number;
           lots: Array<{ name: string; y: number; displayName: string }>;
+          detailCount?: number;
+          detailLabel?: string;
         }
       >();
 
@@ -913,14 +1131,45 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         grouped.set(key, entry);
       });
 
+      chartPlacements.forEach((placement) => {
+        const value = convertAmount(placement.current_value, placement.currency) ?? 0;
+        if (!value || Number.isNaN(value) || value <= 0) return;
+        const placementName = placement.name || "Placement";
+        const placementLabel = placement.placement_type
+          ? `${placementName} · ${placement.placement_type}`
+          : placementName;
+        const key = `placement-${placement.id}`;
+        const entry =
+          grouped.get(key) ||
+          ({
+            symbol: placementName,
+            label: placementLabel,
+            y: 0,
+            lots: [],
+            detailCount: 1,
+            detailLabel: "placement",
+          } as {
+            symbol: string;
+            label: string;
+            y: number;
+            lots: Array<{ name: string; y: number; displayName: string }>;
+            detailCount?: number;
+            detailLabel?: string;
+          });
+        entry.y += value;
+        entry.detailCount = 1;
+        entry.detailLabel = "placement";
+        grouped.set(key, entry);
+      });
+
       const points = Array.from(grouped.values()).map((entry) => ({
         name: entry.symbol,
         label: entry.label,
         y: Number(entry.y.toFixed(2)),
         currency: totalCurrency,
         drilldown: entry.lots.length > 1 ? `allocation-${entry.symbol}` : undefined,
-        detailCount: entry.lots.length,
-        detailLabel: entry.lots.length === 1 ? "lot" : "lots",
+        detailCount: entry.detailCount ?? entry.lots.length,
+        detailLabel: entry.detailLabel ?? (entry.lots.length === 1 ? "lot" : "lots"),
       }));
 
       const drilldownSeriesPie = Array.from(grouped.values())
@@ -968,7 +1217,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       {
         label: string;
         y: number;
-        holdings: Map<string, { name: string; y: number; displayName: string }>;
+        items: Map<string, { name: string; y: number; displayName: string }>;
       }
     >();
     chartHoldings.forEach((holding) => {
@@ -984,11 +1233,11 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         ({
           label,
           y: 0,
-          holdings: new Map<string, { name: string; y: number; displayName: string }>(),
+          items: new Map<string, { name: string; y: number; displayName: string }>(),
         } as {
           label: string;
           y: number;
-          holdings: Map<string, { name: string; y: number; displayName: string }>;
+          items: Map<string, { name: string; y: number; displayName: string }>;
         });
       entry.y += value;
       const symbol =
@@ -998,27 +1247,60 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       const holdingLabel = holding.name || holding.symbol || holding.isin || symbol;
       const holdingKey = symbol.toLowerCase();
       const holdingEntry =
-        entry.holdings.get(holdingKey) ||
+        entry.items.get(holdingKey) ||
         ({
           name: symbol,
           y: 0,
           displayName: holdingLabel,
         } as { name: string; y: number; displayName: string });
       holdingEntry.y += value;
-      entry.holdings.set(holdingKey, holdingEntry);
+      entry.items.set(holdingKey, holdingEntry);
+      grouped.set(key, entry);
+    });
+    chartPlacements.forEach((placement) => {
+      const value = convertAmount(placement.current_value, placement.currency) ?? 0;
+      if (!value || Number.isNaN(value) || value <= 0) return;
+      const label = resolvePlacementGroupLabel(placement) || "Uncategorized";
+      const key = label.toLowerCase();
+      const entry =
+        grouped.get(key) ||
+        ({
+          label,
+          y: 0,
+          items: new Map<string, { name: string; y: number; displayName: string }>(),
+        } as {
+          label: string;
+          y: number;
+          items: Map<string, { name: string; y: number; displayName: string }>;
+        });
+      entry.y += value;
+      const placementName = placement.name || "Placement";
+      const placementLabel = placement.placement_type
+        ? `${placementName} · ${placement.placement_type}`
+        : placementName;
+      const placementKey = `placement-${placement.id}`;
+      const placementEntry =
+        entry.items.get(placementKey) ||
+        ({
+          name: placementName,
+          y: 0,
+          displayName: placementLabel,
+        } as { name: string; y: number; displayName: string });
+      placementEntry.y += value;
+      entry.items.set(placementKey, placementEntry);
       grouped.set(key, entry);
     });
 
     const points = Array.from(grouped.values()).map((entry) => {
-      const holdingCount = entry.holdings.size;
+      const itemCount = entry.items.size;
       return {
         name: entry.label,
         label: entry.label,
         y: Number(entry.y.toFixed(2)),
         currency: totalCurrency,
-        drilldown: holdingCount >= 1 ? `allocation-group-${slugify(entry.label)}` : undefined,
-        detailCount: holdingCount,
-        detailLabel: holdingCount === 1 ? "holding" : "holdings",
+        drilldown: itemCount >= 1 ? `allocation-group-${slugify(entry.label)}` : undefined,
+        detailCount: itemCount,
+        detailLabel: itemCount === 1 ? "position" : "positions",
       };
     });
     const drilldownSeriesPie = Array.from(grouped.values()).map(
@@ -1027,7 +1309,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           type: "pie",
           id: `allocation-group-${slugify(entry.label)}`,
           name: entry.label,
-          data: Array.from(entry.holdings.values()).map((item) => ({
+          data: Array.from(entry.items.values()).map((item) => ({
             name: item.name,
             y: Number(item.y.toFixed(2)),
             currency: totalCurrency,
@@ -1042,7 +1324,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           type: "bar",
           id: `allocation-group-${slugify(entry.label)}`,
           name: entry.label,
-          data: Array.from(entry.holdings.values()).map((item, idx) => ({
+          data: Array.from(entry.items.values()).map((item, idx) => ({
             name: item.name,
             y: Number(item.y.toFixed(2)),
             color: ALLOCATION_COLORS[idx % ALLOCATION_COLORS.length],
@@ -1054,7 +1336,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     );
     const total = points.reduce((sum, p) => sum + p.y, 0);
     return { points, total, drilldownSeriesPie, drilldownSeriesBar };
-  }, [chartGroupBy, chartHoldings, fxRates, totalCurrency]);
+  }, [chartGroupBy, chartHoldings, chartPlacements, accountsById, fxRates, totalCurrency]);
 
   const plData = useMemo(() => {
     const slugify = (value: string) =>
@@ -1115,7 +1397,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         entry.lots.push({ name: lotLabel, label: lotDisplay, gain: gainAbs });
         grouped.set(key, entry);
       });
-      const points = Array.from(grouped.values())
+      const holdingPoints = Array.from(grouped.values())
         .map((entry) => {
           const amount = Math.abs(entry.gain);
           if (!amount || Number.isNaN(amount)) return null;
@@ -1182,6 +1464,50 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 .filter((lot) => lot.y !== 0),
             }) as Highcharts.SeriesOptionsType
         );
+      const placementPoints = chartPlacements
+        .map((placement) => {
+          const currentValue = placement.current_value;
+          const baseValue =
+            placement.initial_value !== null && placement.initial_value !== undefined
+              ? placement.initial_value
+              : placement.current_value;
+          if (currentValue === null || currentValue === undefined) return null;
+          if (baseValue === null || baseValue === undefined) return null;
+          const contributions = placement.total_contributions ?? 0;
+          const withdrawals = placement.total_withdrawals ?? 0;
+          const base = baseValue + contributions - withdrawals;
+          const gainRaw = currentValue - base;
+          const gainAbs = convertAmount(gainRaw, placement.currency);
+          if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return null;
+          if (Number.isNaN(gainAbs)) return null;
+          const placementName = placement.name || "Placement";
+          const placementLabel = placement.placement_type
+            ? `${placementName} · ${placement.placement_type}`
+            : placementName;
+          const amount = Math.abs(gainAbs);
+          if (!amount || Number.isNaN(amount)) return null;
+          return {
+            name: placementName,
+            label: placementLabel,
+            gain: Number(gainAbs.toFixed(2)),
+            y: Number(amount.toFixed(2)),
+            currency: totalCurrency,
+            isLoss: gainAbs < 0,
+            detailCount: 1,
+            detailLabel: "placement",
+          };
+        })
+        .filter(Boolean) as Array<{
+        name: string;
+        label: string;
+        gain: number;
+        y: number;
+        currency: string;
+        isLoss: boolean;
+        detailCount?: number;
+        detailLabel?: string;
+      }>;
+      const points = [...holdingPoints, ...placementPoints];
       const total = points.reduce((sum, p) => sum + p.y, 0);
       return { points, total, drilldownSeriesPie, drilldownSeriesBar };
     }
@@ -1192,7 +1518,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         id: string;
         label: string;
         gain: number;
-        holdings: Map<string, { name: string; label: string; gain: number }>;
+        items: Map<string, { name: string; label: string; gain: number }>;
       }
     >();
     chartHoldings.forEach((holding) => {
@@ -1222,12 +1548,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           id: groupId,
           label,
           gain: 0,
-          holdings: new Map<string, { name: string; label: string; gain: number }>(),
+          items: new Map<string, { name: string; label: string; gain: number }>(),
         } as {
           id: string;
           label: string;
           gain: number;
-          holdings: Map<string, { name: string; label: string; gain: number }>;
+          items: Map<string, { name: string; label: string; gain: number }>;
         });
       entry.gain += gainAbs;
       const symbol = (holding.symbol || holding.isin || `holding-${holding.id}`)
@@ -1236,14 +1562,62 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       const holdingLabel = holding.name || holding.symbol || holding.isin || symbol;
       const holdingKey = symbol.toLowerCase();
       const holdingEntry =
-        entry.holdings.get(holdingKey) ||
+        entry.items.get(holdingKey) ||
         ({
           name: symbol,
           label: holdingLabel,
           gain: 0,
         } as { name: string; label: string; gain: number });
       holdingEntry.gain += gainAbs;
-      entry.holdings.set(holdingKey, holdingEntry);
+      entry.items.set(holdingKey, holdingEntry);
+      grouped.set(key, entry);
+    });
+    chartPlacements.forEach((placement) => {
+      const currentValue = placement.current_value;
+      const baseValue =
+        placement.initial_value !== null && placement.initial_value !== undefined
+          ? placement.initial_value
+          : placement.current_value;
+      if (currentValue === null || currentValue === undefined) return;
+      if (baseValue === null || baseValue === undefined) return;
+      const contributions = placement.total_contributions ?? 0;
+      const withdrawals = placement.total_withdrawals ?? 0;
+      const base = baseValue + contributions - withdrawals;
+      const gainRaw = currentValue - base;
+      const gainAbs = convertAmount(gainRaw, placement.currency);
+      if (gainAbs === null || gainAbs === undefined || gainAbs === 0) return;
+      if (Number.isNaN(gainAbs)) return;
+      const label = resolvePlacementGroupLabel(placement) || "Uncategorized";
+      const key = label.toLowerCase();
+      const groupId = `pl-group-${chartGroupBy}-${slugify(label)}`;
+      const entry =
+        grouped.get(key) ||
+        ({
+          id: groupId,
+          label,
+          gain: 0,
+          items: new Map<string, { name: string; label: string; gain: number }>(),
+        } as {
+          id: string;
+          label: string;
+          gain: number;
+          items: Map<string, { name: string; label: string; gain: number }>;
+        });
+      entry.gain += gainAbs;
+      const placementName = placement.name || "Placement";
+      const placementLabel = placement.placement_type
+        ? `${placementName} · ${placement.placement_type}`
+        : placementName;
+      const placementKey = `placement-${placement.id}`;
+      const placementEntry =
+        entry.items.get(placementKey) ||
+        ({
+          name: placementName,
+          label: placementLabel,
+          gain: 0,
+        } as { name: string; label: string; gain: number });
+      placementEntry.gain += gainAbs;
+      entry.items.set(placementKey, placementEntry);
       grouped.set(key, entry);
     });
 
@@ -1258,9 +1632,9 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           y: Number(amount.toFixed(2)),
           currency: totalCurrency,
           isLoss: entry.gain < 0,
-          drilldown: entry.holdings.size >= 1 ? entry.id : undefined,
-          detailCount: entry.holdings.size,
-          detailLabel: entry.holdings.size === 1 ? "holding" : "holdings",
+          drilldown: entry.items.size >= 1 ? entry.id : undefined,
+          detailCount: entry.items.size,
+          detailLabel: entry.items.size === 1 ? "position" : "positions",
         };
       })
       .filter(Boolean) as Array<{
@@ -1280,7 +1654,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           type: "pie",
           id: entry.id,
           name: entry.label,
-          data: Array.from(entry.holdings.values())
+          data: Array.from(entry.items.values())
             .map((item, idx) => ({
               name: item.name,
               y: Number(Math.abs(item.gain).toFixed(2)),
@@ -1302,7 +1676,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           type: "bar",
           id: entry.id,
           name: entry.label,
-          data: Array.from(entry.holdings.values())
+          data: Array.from(entry.items.values())
             .map((item, idx) => ({
               name: item.name,
               y: Number(item.gain.toFixed(2)),
@@ -1319,7 +1693,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     );
     const total = points.reduce((sum, p) => sum + p.y, 0);
     return { points, total, drilldownSeriesPie, drilldownSeriesBar };
-  }, [chartGroupBy, chartHoldings, fxRates, totalCurrency]);
+  }, [chartGroupBy, chartHoldings, chartPlacements, accountsById, fxRates, totalCurrency]);
 
   const chartGainAbs = useMemo(() => {
     let total = 0;
@@ -1344,8 +1718,137 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       total += gainAbs;
       hasValue = true;
     });
+    chartPlacements.forEach((placement) => {
+      const currentValue = placement.current_value;
+      const baseValue =
+        placement.initial_value !== null && placement.initial_value !== undefined
+          ? placement.initial_value
+          : placement.current_value;
+      if (currentValue === null || currentValue === undefined) return;
+      if (baseValue === null || baseValue === undefined) return;
+      const contributions = placement.total_contributions ?? 0;
+      const withdrawals = placement.total_withdrawals ?? 0;
+      const base = baseValue + contributions - withdrawals;
+      const gainRaw = currentValue - base;
+      const gainAbs = convertAmount(gainRaw, placement.currency);
+      if (gainAbs === null || gainAbs === undefined || Number.isNaN(gainAbs)) return;
+      total += gainAbs;
+      hasValue = true;
+    });
     return hasValue ? total : null;
-  }, [chartHoldings, fxRates]);
+  }, [chartHoldings, chartPlacements, fxRates]);
+
+  const placementEvolution = useMemo(() => {
+    if (!placementChartTarget) {
+      return { points: [] as Array<{ x: number; y: number; rawValue: number }>, currency: "EUR" };
+    }
+    const currency = (placementChartTarget.currency || "EUR").toUpperCase();
+    const sorted = [...placementChartSnapshots]
+      .filter((snapshot) => snapshot.recorded_at || snapshot.created_at)
+      .sort((a, b) => {
+        const aTime = new Date(a.recorded_at || a.created_at).getTime();
+        const bTime = new Date(b.recorded_at || b.created_at).getTime();
+        return aTime - bTime;
+      });
+    let currentValue: number | null = null;
+    const points: Array<{ x: number; y: number; rawValue: number }> = [];
+    sorted.forEach((snapshot) => {
+      const timestamp = new Date(snapshot.recorded_at || snapshot.created_at).getTime();
+      if (Number.isNaN(timestamp)) return;
+      const kind = (snapshot.entry_kind || "VALUE").toUpperCase();
+      if (kind === "VALUE" || kind === "INITIAL") {
+        currentValue = snapshot.value;
+      } else if (kind === "INTEREST" || kind === "CONTRIBUTION") {
+        currentValue = (currentValue ?? 0) + snapshot.value;
+      } else if (kind === "FEE" || kind === "WITHDRAWAL") {
+        currentValue = (currentValue ?? 0) - snapshot.value;
+      }
+      if (currentValue === null || currentValue === undefined) return;
+      const converted = convertAmount(currentValue, currency);
+      const displayValue = converted ?? currentValue;
+      points.push({
+        x: timestamp,
+        y: Number(displayValue.toFixed(2)),
+        rawValue: currentValue,
+      });
+    });
+    return { points, currency };
+  }, [placementChartTarget, placementChartSnapshots, fxRates]);
+
+  const placementChartOptions = useMemo<Highcharts.Options>(() => {
+    if (!placementChartTarget) return {};
+    const seriesData = placementEvolution.points;
+    const placementCurrency = placementEvolution.currency;
+    const hasData = seriesData.length > 0;
+    return {
+      chart: {
+        type: "line",
+        backgroundColor: "transparent",
+        height: 360,
+        zoomType: "x",
+      },
+      title: { text: null },
+      xAxis: {
+        type: "datetime",
+        tickColor: "rgba(255, 255, 255, 0.15)",
+        lineColor: "rgba(255, 255, 255, 0.15)",
+        labels: { style: { color: "#cbd5f5" } },
+      },
+      yAxis: {
+        title: { text: null },
+        gridLineColor: "rgba(255, 255, 255, 0.08)",
+        labels: {
+          style: { color: "#cbd5f5" },
+          formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+            return formatMoney(this.value as number, DISPLAY_CURRENCY);
+          },
+        },
+      },
+      tooltip: {
+        useHTML: true,
+        backgroundColor: "rgba(12, 18, 36, 0.95)",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        style: { color: "#e9ecf4" },
+        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
+          const point = this.point as Highcharts.Point & { rawValue?: number };
+          const x = typeof point.x === "number" ? point.x : 0;
+          const dateLabel = x ? new Date(x).toLocaleString() : "—";
+          const primary = formatMoney(point.y as number, DISPLAY_CURRENCY);
+          const rawValue = point.rawValue ?? point.y ?? 0;
+          const secondary =
+            placementCurrency !== DISPLAY_CURRENCY
+              ? ` (${formatMoney(rawValue, placementCurrency)})`
+              : "";
+          return `<strong>${placementChartTarget.name}</strong><br/>${dateLabel}<br/>${primary}${secondary}`;
+        },
+      },
+      plotOptions: {
+        line: {
+          marker: { enabled: seriesData.length <= 1 },
+          lineWidth: 2,
+        },
+        series: {
+          states: {
+            hover: {
+              halo: { size: 6, opacity: 0.25 },
+            },
+          },
+        },
+      },
+      legend: { enabled: false },
+      credits: { enabled: false },
+      series: hasData
+        ? [
+            {
+              type: "line",
+              name: "Value",
+              color: "#38bdf8",
+              data: seriesData,
+            },
+          ]
+        : [],
+    };
+  }, [placementChartTarget, placementEvolution, DISPLAY_CURRENCY]);
 
   const allocationOptions = useMemo<Highcharts.Options>(() => {
     const hasData = allocationData.total > 0 && allocationData.points.length > 0;
@@ -1366,7 +1869,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         }))
       : [
           {
-            name: "Add holdings",
+            name: "Add holdings or placements",
             y: 1,
             color: "rgba(255, 255, 255, 0.06)",
             isDummy: true,
@@ -1438,7 +1941,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
             detailLabel?: string;
           };
           if (options.isDummy) {
-            return "Add holdings to see allocation";
+            return "Add holdings or placements to see allocation";
           }
           const currency = options.currency || totalCurrency;
           const displayName = options.displayName || point.name;
@@ -1902,13 +2405,36 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   const chartGroupLabel =
     CHART_GROUP_OPTIONS.find((option) => option.value === chartGroupBy)?.label || "Holding";
   const hasHoldings = holdings.length > 0;
+  const hasPlacements = placements.length > 0;
   const allHoldingsIncluded = holdings.length > 0 && excludedHoldings.size === 0;
-  const allocationEmptyMessage = hasHoldings
-    ? "Select holdings to see the breakdown."
-    : "Add holdings to see the breakdown.";
-  const plEmptyMessage = hasHoldings
-    ? "Select holdings/prices to see the P/L breakdown."
-    : "Add holdings/prices to see the P/L breakdown.";
+  const allPlacementsIncluded = placements.length > 0 && excludedPlacements.size === 0;
+  const allocationEmptyMessage =
+    !hasHoldings && !hasPlacements
+      ? "Add holdings or placements to see the breakdown."
+      : hasHoldings && hasPlacements
+        ? "Select holdings or placements to see the breakdown."
+        : hasHoldings
+          ? "Select holdings to see the breakdown."
+          : "Select placements to see the breakdown.";
+  const plEmptyMessage =
+    !hasHoldings && !hasPlacements
+      ? "Add holdings or placements to see the P/L breakdown."
+      : hasHoldings && hasPlacements
+        ? "Select holdings/prices or placements to see the P/L breakdown."
+        : hasHoldings
+          ? "Select holdings/prices to see the P/L breakdown."
+          : "Select placements to see the P/L breakdown.";
+  const sortedPlacements = useMemo(
+    () => [...placements].sort((a, b) => a.name.localeCompare(b.name)),
+    [placements]
+  );
+  const placementsTotal = useMemo(() => {
+    if (!placements.length) return null;
+    return placements.reduce((sum, placement) => {
+      const converted = convertAmount(placement.current_value, placement.currency);
+      return sum + (converted ?? 0);
+    }, 0);
+  }, [placements, fxRates]);
   const accountHoldingsCount = useMemo(() => {
     const counts = new Map<number, number>();
     holdings.forEach((holding) => {
@@ -1917,6 +2443,14 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     });
     return counts;
   }, [holdings]);
+  const accountPlacementsCount = useMemo(() => {
+    const counts = new Map<number, number>();
+    placements.forEach((placement) => {
+      if (!placement.account_id) return;
+      counts.set(placement.account_id, (counts.get(placement.account_id) || 0) + 1);
+    });
+    return counts;
+  }, [placements]);
   const accountHoldingsValue = useMemo(() => {
     const values = new Map<number, number>();
     holdings.forEach((holding) => {
@@ -1935,36 +2469,63 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     });
     return values;
   }, [holdings, fxRates]);
-  const totalHoldingsValue = useMemo(() => {
+  const accountPlacementsValue = useMemo(() => {
+    const values = new Map<number, number>();
+    placements.forEach((placement) => {
+      const accountId = placement.account_id ?? null;
+      if (!accountId) return;
+      const converted = convertAmount(placement.current_value, placement.currency);
+      if (converted === null || converted === undefined) return;
+      values.set(accountId, (values.get(accountId) || 0) + converted);
+    });
+    return values;
+  }, [placements, fxRates]);
+  const totalAllocationValue = useMemo(() => {
     let total = 0;
     accountHoldingsValue.forEach((value) => {
       total += value;
     });
+    accountPlacementsValue.forEach((value) => {
+      total += value;
+    });
     return total;
-  }, [accountHoldingsValue]);
+  }, [accountHoldingsValue, accountPlacementsValue]);
 
   const accountRows = useMemo<AccountRow[]>(() => {
     return accounts.map((account) => {
       const holdingsValue = accountHoldingsValue.get(account.id) || 0;
-      const holdingsPercent =
-        totalHoldingsValue > 0 ? holdingsValue / totalHoldingsValue : null;
-      const totalValue = holdingsValue + (account.liquidity || 0);
+      const placementsValue = accountPlacementsValue.get(account.id) || 0;
+      const allocationValue = holdingsValue + placementsValue;
+      const allocationPercent =
+        totalAllocationValue > 0 ? allocationValue / totalAllocationValue : null;
+      const totalValue = allocationValue + (account.liquidity || 0);
       const holdingsCount = accountHoldingsCount.get(account.id) || 0;
+      const placementsCount = accountPlacementsCount.get(account.id) || 0;
       const manualInvested = account.manual_invested || 0;
       const performance = totalValue - manualInvested;
       const performanceRatio = manualInvested > 0 ? performance / manualInvested : null;
       return {
         account,
         holdingsValue,
-        holdingsPercent,
+        placementsValue,
+        allocationValue,
+        allocationPercent,
         totalValue,
         holdingsCount,
+        placementsCount,
         manualInvested,
         performance,
         performanceRatio,
       };
     });
-  }, [accounts, accountHoldingsCount, accountHoldingsValue, totalHoldingsValue]);
+  }, [
+    accounts,
+    accountHoldingsCount,
+    accountHoldingsValue,
+    accountPlacementsCount,
+    accountPlacementsValue,
+    totalAllocationValue,
+  ]);
 
   const sortedAccounts = useMemo(() => {
     const list = [...accountRows];
@@ -1977,7 +2538,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         case "manual_invested":
           return row.manualInvested;
         case "holdings":
-          return row.holdingsValue;
+          return row.allocationValue;
         case "liquidity":
           return row.account.liquidity ?? 0;
         case "total":
@@ -2009,31 +2570,35 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   const accountsSummary = useMemo(() => {
     if (!accountRows.length) return null;
     let manualInvested = 0;
-    let holdingsValue = 0;
+    let allocationValue = 0;
     let liquidity = 0;
     let totalValue = 0;
     let holdingsCount = 0;
+    let placementsCount = 0;
     accountRows.forEach((row) => {
       manualInvested += row.manualInvested;
-      holdingsValue += row.holdingsValue;
+      allocationValue += row.allocationValue;
       liquidity += row.account.liquidity || 0;
       totalValue += row.totalValue;
       holdingsCount += row.holdingsCount;
+      placementsCount += row.placementsCount;
     });
     const performance = totalValue - manualInvested;
     const performanceRatio = manualInvested > 0 ? performance / manualInvested : null;
-    const holdingsPercent = totalHoldingsValue > 0 ? holdingsValue / totalHoldingsValue : null;
+    const allocationPercent =
+      totalAllocationValue > 0 ? allocationValue / totalAllocationValue : null;
     return {
       manualInvested,
-      holdingsValue,
+      allocationValue,
       liquidity,
       totalValue,
       performance,
       performanceRatio,
       holdingsCount,
-      holdingsPercent,
+      placementsCount,
+      allocationPercent,
     };
-  }, [accountRows, totalHoldingsValue]);
+  }, [accountRows, totalAllocationValue]);
 
   const sortedHoldings = useMemo(() => {
     const list = [...holdings];
@@ -2257,6 +2822,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   }, [excludedHoldings.size, holdings.length]);
 
   useEffect(() => {
+    if (!includeAllPlacementsRef.current) return;
+    const total = placements.length;
+    includeAllPlacementsRef.current.indeterminate =
+      excludedPlacements.size > 0 && excludedPlacements.size < total;
+  }, [excludedPlacements.size, placements.length]);
+
+  useEffect(() => {
     if (!holdings.length) {
       if (excludedHoldings.size) {
         setExcludedHoldings(new Set());
@@ -2280,6 +2852,29 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   }, [holdings, excludedHoldings.size]);
 
   useEffect(() => {
+    if (!placements.length) {
+      if (excludedPlacements.size) {
+        setExcludedPlacements(new Set());
+      }
+      return;
+    }
+    setExcludedPlacements((prev) => {
+      if (!prev.size) return prev;
+      const validIds = new Set(placements.map((placement) => placement.id));
+      let changed = false;
+      const next = new Set<number>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [placements, excludedPlacements.size]);
+
+  useEffect(() => {
     if (!showAddHoldingModal) return;
     if (!holdingForm.account_id && defaultAccountId) {
       setHoldingForm((prev) => ({
@@ -2288,6 +2883,16 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
       }));
     }
   }, [showAddHoldingModal, defaultAccountId, holdingForm.account_id]);
+
+  useEffect(() => {
+    if (!showPlacementModal || editingPlacementId) return;
+    if (!placementForm.account_id && defaultAccountId) {
+      setPlacementForm((prev) => ({
+        ...prev,
+        account_id: String(defaultAccountId),
+      }));
+    }
+  }, [showPlacementModal, editingPlacementId, defaultAccountId, placementForm.account_id]);
 
   useEffect(() => {
     if (!showAddHoldingModal || editingHoldingId) return;
@@ -2412,6 +3017,15 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         }
       }
     });
+    placements.forEach((placement) => {
+      const cur = (placement.currency || "").toUpperCase();
+      if (cur && cur !== DISPLAY_CURRENCY) {
+        const key = `${cur}->${DISPLAY_CURRENCY}`;
+        if (!fxRates[key]) {
+          needed.add(cur);
+        }
+      }
+    });
     if (needed.size === 0) return;
     let cancelled = false;
     const loadFx = async () => {
@@ -2433,7 +3047,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     return () => {
       cancelled = true;
     };
-  }, [holdings, DISPLAY_CURRENCY, fxRates]);
+  }, [holdings, placements, DISPLAY_CURRENCY, fxRates]);
 
   useEffect(() => {
     if (!authToken) {
@@ -2737,10 +3351,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
     if (!holdingActionsReturnId) return;
     const actionModalOpen =
       showAddHoldingModal ||
+      showPlacementModal ||
       Boolean(buyHoldingTarget) ||
       Boolean(sellHoldingTarget) ||
       Boolean(holdingConfirmTarget) ||
-      Boolean(cashTargetAccount);
+      Boolean(cashTargetAccount) ||
+      Boolean(placementHistoryTarget) ||
+      Boolean(placementDeleteTarget);
     if (actionModalOpen) return;
     const latest = holdings.find((item) => item.id === holdingActionsReturnId);
     if (latest) {
@@ -2750,10 +3367,13 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
   }, [
     holdingActionsReturnId,
     showAddHoldingModal,
+    showPlacementModal,
     buyHoldingTarget,
     sellHoldingTarget,
     holdingConfirmTarget,
     cashTargetAccount,
+    placementHistoryTarget,
+    placementDeleteTarget,
     holdings,
   ]);
 
@@ -3069,6 +3689,12 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
           account_id: String(createdId),
         }));
       }
+      if (createdId && showPlacementModal) {
+        setPlacementForm((prev) => ({
+          ...prev,
+          account_id: String(createdId),
+        }));
+      }
       setAccountForm({
         name: "",
         account_type: "",
@@ -3103,6 +3729,235 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
         "Failed to delete account";
       setStatus({ kind: "error", message: detail });
       return false;
+    }
+  };
+
+  const resetPlacementForm = (options?: { accountId?: number | null }) => {
+    const accountId =
+      options?.accountId ?? (defaultAccountId ? defaultAccountId : null);
+    setPlacementForm({
+      account_id: accountId ? String(accountId) : "",
+      name: "",
+      placement_type: "",
+      sector: "",
+      industry: "",
+      currency: "EUR",
+      initial_value: "",
+      recorded_at: formatDateTimeLocal(),
+    });
+  };
+
+  const closePlacementModal = () => {
+    setShowPlacementModal(false);
+    setEditingPlacementId(null);
+    resetPlacementForm();
+  };
+
+  const handlePlacementSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const isEditing = Boolean(editingPlacementId);
+    const accountId = placementForm.account_id
+      ? Number(placementForm.account_id)
+      : undefined;
+    const name = placementForm.name.trim();
+    if (!name) {
+      setStatus({ kind: "error", message: "Placement name is required" });
+      return;
+    }
+    if (placementForm.account_id && Number.isNaN(accountId)) {
+      setStatus({ kind: "error", message: "Account selection is invalid" });
+      return;
+    }
+    const placementType = placementForm.placement_type.trim() || undefined;
+    const sector = placementForm.sector.trim() || undefined;
+    const industry = placementForm.industry.trim() || undefined;
+    const currency = placementForm.currency || "EUR";
+    let initialValue: number | undefined;
+    let recordedAt: string | undefined;
+    if (!editingPlacementId && placementForm.initial_value !== "") {
+      const parsed = Number(placementForm.initial_value);
+      if (Number.isNaN(parsed) || parsed < 0) {
+        setStatus({ kind: "error", message: "Initial value must be a positive number" });
+        return;
+      }
+      initialValue = parsed;
+      recordedAt = placementForm.recorded_at || undefined;
+    }
+    setStatus({
+      kind: "loading",
+      message: isEditing ? "Updating placement..." : "Creating placement...",
+    });
+    try {
+      if (isEditing && editingPlacementId) {
+        await updatePlacement(editingPlacementId, {
+          account_id: accountId ?? null,
+          name,
+          placement_type: placementType,
+          sector,
+          industry,
+          currency,
+        });
+      } else {
+        await createPlacement({
+          ...(accountId ? { account_id: accountId } : {}),
+          name,
+          placement_type: placementType,
+          sector,
+          industry,
+          currency,
+          ...(initialValue !== undefined ? { initial_value: initialValue, recorded_at: recordedAt } : {}),
+        });
+      }
+      await loadPortfolio();
+      closePlacementModal();
+      setStatus({
+        kind: "success",
+        message: isEditing ? "Placement updated" : "Placement created",
+      });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to save placement";
+      setStatus({ kind: "error", message: detail });
+    }
+  };
+
+  const handleDeletePlacement = async (placementId: number) => {
+    setDeletingPlacementId(placementId);
+    setStatus({ kind: "loading", message: "Deleting placement..." });
+    try {
+      await deletePlacement(placementId);
+      await loadPortfolio();
+      setStatus({ kind: "success", message: "Placement deleted" });
+      return true;
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to delete placement";
+      setStatus({ kind: "error", message: detail });
+      return false;
+    } finally {
+      setDeletingPlacementId(null);
+    }
+  };
+
+  const getDefaultEntryKind = (placement?: Placement | null) => {
+    if (!placement || placement.initial_value === null || placement.initial_value === undefined) {
+      return "INITIAL" as const;
+    }
+    return "INTEREST" as const;
+  };
+
+  const resetPlacementSnapshotForm = (placement?: Placement | null) => {
+    setPlacementSnapshotForm({
+      value: "",
+      recorded_at: formatDateTimeLocal(),
+      entry_kind: getDefaultEntryKind(placement),
+    });
+    setEditingPlacementSnapshotId(null);
+  };
+
+  const openPlacementHistory = (placement: Placement) => {
+    resetPlacementSnapshotForm(placement);
+    setPlacementHistoryTarget(placement);
+  };
+
+  const closePlacementHistory = () => {
+    setPlacementHistoryTarget(null);
+    setPlacementSnapshots([]);
+    resetPlacementSnapshotForm();
+  };
+
+  const closePlacementChart = () => {
+    setPlacementChartTarget(null);
+  };
+
+  const handlePlacementSnapshotSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!placementHistoryTarget) return;
+    if (
+      placementSnapshotForm.entry_kind !== "VALUE" &&
+      placementSnapshotForm.entry_kind !== "INITIAL" &&
+      (placementHistoryTarget.initial_value === null ||
+        placementHistoryTarget.initial_value === undefined)
+    ) {
+      setStatus({
+        kind: "error",
+        message:
+          "Add an initial placement or value before interests, fees, contributions, or withdrawals",
+      });
+      return;
+    }
+    const value = Number(placementSnapshotForm.value);
+    if (Number.isNaN(value) || value < 0) {
+      setStatus({ kind: "error", message: "Snapshot value must be a positive number" });
+      return;
+    }
+    setStatus({ kind: "loading", message: "Saving snapshot..." });
+    try {
+      if (editingPlacementSnapshotId) {
+        const res = await updatePlacementSnapshot(
+          placementHistoryTarget.id,
+          editingPlacementSnapshotId,
+          {
+            value,
+            recorded_at: placementSnapshotForm.recorded_at || undefined,
+          entry_kind: placementSnapshotForm.entry_kind,
+        }
+      );
+        setPlacementHistoryTarget(res.data);
+      } else {
+        const res = await addPlacementSnapshot(placementHistoryTarget.id, {
+          value,
+          recorded_at: placementSnapshotForm.recorded_at || undefined,
+        entry_kind: placementSnapshotForm.entry_kind,
+      });
+        setPlacementHistoryTarget(res.data);
+      }
+      await loadPortfolio();
+      const snapshots = await fetchPlacementSnapshots(placementHistoryTarget.id);
+      setPlacementSnapshots(snapshots.data);
+      resetPlacementSnapshotForm(placementHistoryTarget);
+      setStatus({ kind: "success", message: "Snapshot saved" });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to save snapshot";
+      setStatus({ kind: "error", message: detail });
+    }
+  };
+
+  const handleEditPlacementSnapshot = (snapshot: PlacementSnapshot) => {
+    setEditingPlacementSnapshotId(snapshot.id);
+    setPlacementSnapshotForm({
+      value: snapshot.value?.toString() ?? "",
+      recorded_at: snapshot.recorded_at
+        ? formatDateTimeLocal(new Date(snapshot.recorded_at))
+        : formatDateTimeLocal(),
+      entry_kind: snapshot.entry_kind || "VALUE",
+    });
+  };
+
+  const handleDeletePlacementSnapshot = async (snapshotId: number) => {
+    if (!placementHistoryTarget) return;
+    setDeletingPlacementSnapshotId(snapshotId);
+    setStatus({ kind: "loading", message: "Deleting snapshot..." });
+    try {
+      await deletePlacementSnapshot(placementHistoryTarget.id, snapshotId);
+      await loadPortfolio();
+      const snapshots = await fetchPlacementSnapshots(placementHistoryTarget.id);
+      setPlacementSnapshots(snapshots.data);
+      if (editingPlacementSnapshotId === snapshotId) {
+        resetPlacementSnapshotForm(placementHistoryTarget);
+      }
+      setStatus({ kind: "success", message: "Snapshot deleted" });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to delete snapshot";
+      setStatus({ kind: "error", message: detail });
+    } finally {
+      setDeletingPlacementSnapshotId(null);
     }
   };
 
@@ -3373,7 +4228,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                     <h3>{displayMoney(selectedLiquidity, totalCurrency)}</h3>
                   </div>
                   <div className="stat">
-                    <p>Position costs</p>
+                    <p>Portfolio costs</p>
                     <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
                   </div>
                   
@@ -3654,7 +4509,7 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       <button
                         type="button"
                         className="table-sort"
-                        title="Value of holdings in this account."
+                        title="Value of holdings and placements in this account."
                         onClick={() => handleAccountSort("holdings")}
                       >
                         Holdings allocation {renderAccountSortIcon("holdings")}
@@ -3689,14 +4544,18 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                       {sortedAccounts.map((row) => {
                         const {
                           account,
-                          holdingsValue,
-                          holdingsPercent,
+                          allocationValue,
+                          allocationPercent,
                           totalValue,
                           holdingsCount,
+                          placementsCount,
                           manualInvested,
                           performance,
                           performanceRatio,
                         } = row;
+                        const holdingsLabel = holdingsCount === 1 ? "holding" : "holdings";
+                        const placementsLabel =
+                          placementsCount === 1 ? "placement" : "placements";
                         return (
                           <div className="table-row" key={account.id}>
                             <span data-label="Name">{account.name}</span>
@@ -3705,13 +4564,19 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                               {formatMoney(manualInvested, totalCurrency)}
                             </span>
                             <span data-label="Holdings allocation">
-                              {formatMoney(holdingsValue, totalCurrency)}
+                              {formatMoney(allocationValue, totalCurrency)}
                               <small>
-                                {holdingsPercent !== null
-                                  ? formatPercent(holdingsPercent)
+                                {allocationPercent !== null
+                                  ? formatPercent(allocationPercent)
                                   : "—"}
                                 {" · "}
-                                {holdingsCount} holding{holdingsCount === 1 ? "" : "s"}
+                                {holdingsCount} {holdingsLabel}
+                                {placementsCount > 0 && (
+                                  <>
+                                    {" · "}
+                                    {placementsCount} {placementsLabel}
+                                  </>
+                                )}
                               </small>
                             </span>
                             <span data-label="Cash available">
@@ -3788,14 +4653,23 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                             {formatMoney(accountsSummary.manualInvested, totalCurrency)}
                           </span>
                           <span data-label="Holdings allocation">
-                            {formatMoney(accountsSummary.holdingsValue, totalCurrency)}
+                            {formatMoney(accountsSummary.allocationValue, totalCurrency)}
                             <small>
-                              {accountsSummary.holdingsPercent !== null
-                                ? formatPercent(accountsSummary.holdingsPercent)
+                              {accountsSummary.allocationPercent !== null
+                                ? formatPercent(accountsSummary.allocationPercent)
                                 : "—"}
                               {" · "}
-                              {accountsSummary.holdingsCount} holding
-                              {accountsSummary.holdingsCount === 1 ? "" : "s"}
+                              {accountsSummary.holdingsCount}{" "}
+                              {accountsSummary.holdingsCount === 1 ? "holding" : "holdings"}
+                              {accountsSummary.placementsCount > 0 && (
+                                <>
+                                  {" · "}
+                                  {accountsSummary.placementsCount}{" "}
+                                  {accountsSummary.placementsCount === 1
+                                    ? "placement"
+                                    : "placements"}
+                                </>
+                              )}
                             </small>
                           </span>
                           <span data-label="Cash available">
@@ -4121,6 +4995,234 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                           onClick={() => setHoldingActionsTarget(holding)}
                         >
                           ⋯
+                        </button>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="card placements-card">
+          <div className="card-header">
+            <div>
+              <p className="eyebrow">Placements</p>
+              <h2>Placements</h2>
+            </div>
+            <div className="card-actions">
+              <span className="pill ghost">{placements.length} tracked</span>
+              {placementsTotal !== null && (
+                <span className="pill ghost">
+                  {formatMoney(placementsTotal, totalCurrency)} total
+                </span>
+              )}
+              <button
+                type="button"
+                className="button primary compact"
+                onClick={() => {
+                  resetPlacementForm();
+                  setEditingPlacementId(null);
+                  setShowPlacementModal(true);
+                }}
+              >
+                + Add
+              </button>
+            </div>
+          </div>
+          {!hasPlacements ? (
+            <p className="empty">Add a placement to track manual values.</p>
+          ) : (
+            <div className="table placements-table">
+              <div className="table-head">
+                <div className="table-toggle">
+                  <input
+                    ref={includeAllPlacementsRef}
+                    className="table-checkbox"
+                    type="checkbox"
+                    checked={allPlacementsIncluded}
+                    disabled={placements.length === 0}
+                    onChange={(e) => setAllPlacementsForCharts(e.target.checked)}
+                    aria-label="Include all placements in charts and KPIs"
+                    title="Include all placements in charts and KPIs"
+                  />
+                </div>
+                <span>Name</span>
+                <span>Account</span>
+                <span>Initial value (date)</span>
+                <span>Total interests</span>
+                <span>Total fees</span>
+                <span>Current value (date)</span>
+                <span>P/L</span>
+                <span>Actions</span>
+              </div>
+              <div className="table-body">
+                {sortedPlacements.map((placement) => {
+                  const placementCurrency = placement.currency || "EUR";
+                  const valueDisplay = renderAmount(
+                    placement.current_value,
+                    placementCurrency
+                  );
+                  const initialValue = placement.initial_value;
+                  const currentValue = placement.current_value;
+                  const contributions = placement.total_contributions ?? 0;
+                  const withdrawals = placement.total_withdrawals ?? 0;
+                  const interestValue = placement.total_interests;
+                  const feeValue = placement.total_fees;
+                  const feeDisplayValue =
+                    feeValue !== null && feeValue !== undefined ? -feeValue : null;
+                  const baseValue =
+                    initialValue !== null && initialValue !== undefined
+                      ? initialValue + contributions - withdrawals
+                      : null;
+                  const plRaw =
+                    baseValue !== null &&
+                    currentValue !== null &&
+                    currentValue !== undefined
+                      ? currentValue - baseValue
+                      : null;
+                  const rate =
+                    plRaw !== null && baseValue !== null && baseValue > 0
+                      ? plRaw / baseValue
+                      : null;
+                  const annualRate = computeAnnualizedReturnBetween(
+                    rate,
+                    placement.initial_recorded_at,
+                    placement.last_snapshot_at
+                  );
+                  const interestDisplay = renderAmount(interestValue, placementCurrency);
+                  const feeDisplay = renderAmount(feeDisplayValue, placementCurrency);
+                  const initialDisplay = renderAmount(
+                    initialValue,
+                    placementCurrency
+                  );
+                  const account =
+                    placement.account_id !== null && placement.account_id !== undefined
+                      ? accountsById.get(placement.account_id)
+                      : null;
+                  const placementLabel =
+                    placement.name || placement.placement_type || "placement";
+                  return (
+                    <div className="table-row" key={placement.id}>
+                      <span className="table-toggle" data-label="Charts">
+                        <input
+                          className="table-checkbox"
+                          type="checkbox"
+                          checked={!excludedPlacements.has(placement.id)}
+                          onChange={() => togglePlacementForCharts(placement.id)}
+                          aria-label={`Include ${placementLabel} in charts and KPIs`}
+                          title="Include in charts and KPIs"
+                        />
+                      </span>
+                      <span className="instrument-cell" data-label="Name">
+                        <span className="instrument-name-row">{placement.name}</span>
+                        <small>{placement.placement_type || "—"}</small>
+                      </span>
+                      <span data-label="Account">
+                        {account?.name || "—"}
+                        {account?.account_type && <small>{account.account_type}</small>}
+                      </span>
+                      <span data-label="Initial value">
+                        {initialDisplay.primary}
+                        {initialDisplay.secondary && <small>{initialDisplay.secondary}</small>}
+                        <small>{formatDateTime(placement.initial_recorded_at)}</small>
+                      </span>
+                      <span
+                        data-label="Total interests"
+                        className={
+                          interestValue === null || interestValue === undefined || interestValue === 0
+                            ? ""
+                            : interestValue >= 0
+                              ? "positive"
+                              : "negative"
+                        }
+                      >
+                        {interestDisplay.primary}
+                        {interestDisplay.secondary && <small>{interestDisplay.secondary}</small>}
+                      </span>
+                      <span
+                        data-label="Total fees"
+                        className={
+                          feeDisplayValue === null ||
+                          feeDisplayValue === undefined ||
+                          feeDisplayValue === 0
+                            ? ""
+                            : feeDisplayValue > 0
+                              ? "positive"
+                              : "negative"
+                        }
+                      >
+                        {feeDisplay.primary}
+                        {feeDisplay.secondary && <small>{feeDisplay.secondary}</small>}
+                      </span>
+                      <span data-label="Current value">
+                        {valueDisplay.primary}
+                        {valueDisplay.secondary && <small>{valueDisplay.secondary}</small>}
+                        <small>{formatDateTime(placement.last_snapshot_at)}</small>
+                      </span>
+                      <span
+                        data-label="P/L"
+                        className={
+                          plRaw === null || plRaw === undefined
+                            ? ""
+                            : plRaw >= 0
+                              ? "positive"
+                              : "negative"
+                        }
+                      >
+                        {formatPercentSigned(rate)}
+                        <small>Ann. {formatPercentSigned(annualRate)}</small>
+                      </span>
+                      <span className="account-actions" data-label="Actions">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`View chart for ${placement.name}`}
+                          title="View chart"
+                          onClick={() => setPlacementChartTarget(placement)}
+                        >
+                          📈
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Update ${placement.name}`}
+                          title="Update value"
+                          onClick={() => openPlacementHistory(placement)}
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Edit ${placement.name}`}
+                          onClick={() => {
+                            setPlacementForm({
+                              account_id: placement.account_id
+                                ? String(placement.account_id)
+                                : "",
+                              name: placement.name,
+                              placement_type: placement.placement_type || "",
+                              sector: placement.sector || "",
+                              industry: placement.industry || "",
+                              currency: placement.currency || "EUR",
+                              initial_value: "",
+                              recorded_at: formatDateTimeLocal(),
+                            });
+                            setEditingPlacementId(placement.id);
+                            setShowPlacementModal(true);
+                          }}
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Delete ${placement.name}`}
+                          onClick={() => setPlacementDeleteTarget(placement)}
+                        >
+                          🗑️
                         </button>
                       </span>
                     </div>
@@ -4568,6 +5670,405 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showPlacementModal && (
+        <div className="symbol-modal-backdrop" onClick={closePlacementModal}>
+          <div
+            className="symbol-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="placement-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">Placements</p>
+                <h3 id="placement-modal-title">
+                  {editingPlacementId ? "Edit placement" : "Add placement"}
+                </h3>
+              </div>
+              <button className="modal-close" type="button" onClick={closePlacementModal}>
+                ×
+              </button>
+            </div>
+            <form className="form" onSubmit={handlePlacementSubmit}>
+              <div className="symbol-modal-body account-modal-body">
+                <label>
+                  Account
+                  <div className="account-select">
+                    <select
+                      value={placementForm.account_id}
+                      onChange={(e) =>
+                        setPlacementForm((prev) => ({
+                          ...prev,
+                          account_id: e.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Default account</option>
+                      {accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.name}
+                          {account.account_type ? ` · ${account.account_type}` : ""}
+                          {"   "} ({formatMoney(account.liquidity, totalCurrency)})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="button compact"
+                      onClick={() => {
+                        setAccountForm({
+                          name: "",
+                          account_type: "",
+                          liquidity: "",
+                          manual_invested: "",
+                          created_at: formatDateInput(),
+                        });
+                        setEditingAccountId(null);
+                        setShowAccountModal(true);
+                      }}
+                    >
+                      + Add
+                    </button>
+                  </div>
+                </label>
+                <label>
+                  Name
+                  <input
+                    type="text"
+                    value={placementForm.name}
+                    onChange={(e) =>
+                      setPlacementForm((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                    placeholder="Assurance vie, Livret A..."
+                    required
+                  />
+                </label>
+                <label>
+                  Type
+                  <input
+                    type="text"
+                    list="placement-type-options"
+                    value={placementForm.placement_type}
+                    onChange={(e) =>
+                      setPlacementForm((prev) => ({
+                        ...prev,
+                        placement_type: e.target.value,
+                      }))
+                    }
+                    placeholder="Assurance vie, Livret A..."
+                  />
+                  <datalist id="placement-type-options">
+                    {PLACEMENT_TYPE_OPTIONS.map((option) => (
+                      <option key={option} value={option} />
+                    ))}
+                  </datalist>
+                </label>
+                <label>
+                  Sector
+                  <input
+                    type="text"
+                    value={placementForm.sector}
+                    onChange={(e) =>
+                      setPlacementForm((prev) => ({
+                        ...prev,
+                        sector: e.target.value,
+                      }))
+                    }
+                    placeholder="Insurance, Banking..."
+                  />
+                </label>
+                <label>
+                  Industry
+                  <input
+                    type="text"
+                    value={placementForm.industry}
+                    onChange={(e) =>
+                      setPlacementForm((prev) => ({
+                        ...prev,
+                        industry: e.target.value,
+                      }))
+                    }
+                    placeholder="Life insurance, Savings..."
+                  />
+                </label>
+                <label>
+                  Currency
+                  <select
+                    value={placementForm.currency}
+                    onChange={(e) =>
+                      setPlacementForm((prev) => ({ ...prev, currency: e.target.value }))
+                    }
+                  >
+                    <option value="EUR">EUR</option>
+                    <option value="USD">USD</option>
+                  </select>
+                </label>
+                {!editingPlacementId && (
+                  <>
+                    <label>
+                      Initial value
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={placementForm.initial_value}
+                        onChange={(e) =>
+                          setPlacementForm((prev) => ({
+                            ...prev,
+                            initial_value: e.target.value,
+                          }))
+                        }
+                        placeholder="0"
+                      />
+                    </label>
+                    <label>
+                      Recorded at
+                      <input
+                        type="datetime-local"
+                        value={placementForm.recorded_at}
+                        onChange={(e) =>
+                          setPlacementForm((prev) => ({
+                            ...prev,
+                            recorded_at: e.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
+              <div className="symbol-modal-footer">
+                <button className="button" type="button" onClick={closePlacementModal}>
+                  Cancel
+                </button>
+                <button className="button primary" type="submit">
+                  {editingPlacementId ? "Save changes" : "Save placement"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {placementHistoryTarget && (
+        <div className="symbol-modal-backdrop" onClick={closePlacementHistory}>
+          <div
+            className="symbol-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="placement-history-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">Placements</p>
+                <h3 id="placement-history-title">{placementHistoryTarget.name}</h3>
+              </div>
+              <button className="modal-close" type="button" onClick={closePlacementHistory}>
+                ×
+              </button>
+            </div>
+            <form className="form" onSubmit={handlePlacementSnapshotSubmit}>
+              <div className="symbol-modal-body account-modal-body">
+                <label>
+                  Entry type
+                  <select
+                    value={placementSnapshotForm.entry_kind}
+                    onChange={(e) =>
+                      setPlacementSnapshotForm((prev) => ({
+                        ...prev,
+                        entry_kind: e.target.value as
+                          | "VALUE"
+                          | "INITIAL"
+                          | "INTEREST"
+                          | "FEE"
+                          | "CONTRIBUTION"
+                          | "WITHDRAWAL",
+                      }))
+                    }
+                  >
+                    <option value="INITIAL">Initial placement</option>
+                    <option value="VALUE">Value (absolute)</option>
+                    <option value="INTEREST">Interest</option>
+                    <option value="FEE">Management fee</option>
+                    <option value="CONTRIBUTION">Contribution</option>
+                    <option value="WITHDRAWAL">Withdrawal</option>
+                  </select>
+                </label>
+                <label>
+                  Amount
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={placementSnapshotForm.value}
+                    onChange={(e) =>
+                      setPlacementSnapshotForm((prev) => ({
+                        ...prev,
+                        value: e.target.value,
+                      }))
+                    }
+                    placeholder="0"
+                    required
+                  />
+                </label>
+                <label>
+                  Recorded at
+                  <input
+                    type="datetime-local"
+                    value={placementSnapshotForm.recorded_at}
+                    onChange={(e) =>
+                      setPlacementSnapshotForm((prev) => ({
+                        ...prev,
+                        recorded_at: e.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="confirm-modal-body">
+                <div className="confirm-details">
+                  <span className="pill ghost">
+                    Current{" "}
+                    {formatMoney(
+                      placementHistoryTarget.current_value,
+                      placementHistoryTarget.currency || "EUR"
+                    )}
+                  </span>
+                  <span className="pill ghost">
+                    Updated {formatDateTime(placementHistoryTarget.last_snapshot_at)}
+                  </span>
+                </div>
+                {placementSnapshotsLoading ? (
+                  <p className="muted helper">Loading history...</p>
+                ) : placementSnapshots.length ? (
+                  <div className="table snapshot-table">
+                    <div className="table-head">
+                      <span>Type</span>
+                      <span>Amount</span>
+                      <span>Recorded at</span>
+                      <span>Actions</span>
+                    </div>
+                    <div className="table-body">
+                      {placementSnapshots.map((snapshot) => {
+                        const kind =
+                          snapshot.entry_kind === "INITIAL"
+                            ? "Initial"
+                            : snapshot.entry_kind === "INTEREST"
+                              ? "Interest"
+                              : snapshot.entry_kind === "FEE"
+                                ? "Fee"
+                                : snapshot.entry_kind === "CONTRIBUTION"
+                                  ? "Contribution"
+                                  : snapshot.entry_kind === "WITHDRAWAL"
+                                    ? "Withdrawal"
+                                    : "Value";
+                        const amount =
+                          snapshot.entry_kind === "VALUE" || snapshot.entry_kind === "INITIAL"
+                            ? formatMoney(
+                                snapshot.value,
+                                placementHistoryTarget.currency || "EUR"
+                              )
+                            : snapshot.entry_kind === "FEE" ||
+                                snapshot.entry_kind === "WITHDRAWAL"
+                              ? formatMoneySigned(
+                                  -snapshot.value,
+                                  placementHistoryTarget.currency || "EUR"
+                                )
+                              : formatMoneySigned(
+                                  snapshot.value,
+                                  placementHistoryTarget.currency || "EUR"
+                                );
+                        return (
+                          <div className="table-row" key={snapshot.id}>
+                            <span data-label="Type">{kind}</span>
+                            <span data-label="Amount">{amount}</span>
+                            <span data-label="Recorded at">
+                              {formatDateTime(snapshot.recorded_at)}
+                            </span>
+                            <span className="account-actions" data-label="Actions">
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label="Edit entry"
+                                onClick={() => handleEditPlacementSnapshot(snapshot)}
+                              >
+                                ✏️
+                              </button>
+                              <button
+                                type="button"
+                                className="icon-button"
+                                aria-label="Delete entry"
+                                disabled={deletingPlacementSnapshotId === snapshot.id}
+                                onClick={() => handleDeletePlacementSnapshot(snapshot.id)}
+                              >
+                                🗑️
+                              </button>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="empty">No snapshots yet.</p>
+                )}
+              </div>
+              <div className="symbol-modal-footer">
+                <button className="button" type="button" onClick={closePlacementHistory}>
+                  Close
+                </button>
+                {editingPlacementSnapshotId && (
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => resetPlacementSnapshotForm(placementHistoryTarget)}
+                  >
+                    Cancel edit
+                  </button>
+                )}
+                <button className="button primary" type="submit">
+                  {editingPlacementSnapshotId ? "Update entry" : "Save entry"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {placementChartTarget && (
+        <div className="symbol-modal-backdrop" onClick={closePlacementChart}>
+          <div
+            className="symbol-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="placement-chart-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header chart-modal-header">
+              <div>
+                <p className="eyebrow">Placements</p>
+                <h3 id="placement-chart-title">Placement evolution</h3>
+                <p className="muted">{placementChartTarget.name}</p>
+              </div>
+              <button className="modal-close" type="button" onClick={closePlacementChart}>
+                ×
+              </button>
+            </div>
+            <div className="chart-wrapper">
+              {placementChartLoading ? (
+                <p className="muted helper">Loading history...</p>
+              ) : placementEvolution.points.length ? (
+                <HighchartsReact highcharts={Highcharts} options={placementChartOptions} />
+              ) : (
+                <p className="muted helper">No placement history yet.</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -5275,6 +6776,79 @@ const computeAnnualizedReturn = (gainPct?: number | null, acquired_at?: string |
                   }}
                 >
                   Delete account
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {placementDeleteTarget && (
+        <div
+          className="symbol-modal-backdrop"
+          onClick={() => setPlacementDeleteTarget(null)}
+        >
+          <div
+            className="symbol-modal confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-placement-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="symbol-modal-header">
+              <div>
+                <p className="eyebrow">Delete placement</p>
+                <h3 id="delete-placement-title">
+                  Delete {placementDeleteTarget.name}?
+                </h3>
+              </div>
+              <button
+                className="modal-close"
+                type="button"
+                onClick={() => setPlacementDeleteTarget(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="confirm-modal-body">
+              <p className="confirm-warning">
+                This will permanently delete the placement and its history. This action is
+                irreversible.
+              </p>
+              <div className="confirm-details">
+                <span className="pill ghost">
+                  Current{" "}
+                  {formatMoney(
+                    placementDeleteTarget.current_value,
+                    placementDeleteTarget.currency || "EUR"
+                  )}
+                </span>
+                <span className="pill ghost">
+                  Updated {formatDateTime(placementDeleteTarget.last_snapshot_at)}
+                </span>
+              </div>
+            </div>
+            <div className="symbol-modal-footer">
+              <div className="footer-right">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => setPlacementDeleteTarget(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button danger"
+                  type="button"
+                  disabled={deletingPlacementId === placementDeleteTarget.id}
+                  onClick={async () => {
+                    const success = await handleDeletePlacement(placementDeleteTarget.id);
+                    if (success) {
+                      setPlacementDeleteTarget(null);
+                    }
+                  }}
+                >
+                  Delete placement
                 </button>
               </div>
             </div>
