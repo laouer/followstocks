@@ -582,3 +582,9 @@ class Cac40AnalysisResponse(BaseModel):
     metric: str
     updated_at: datetime
     items: List[Cac40Item]
+
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    message: str
+    language: Optional[str] = Field(
+        None, description="UI language code (e.g., 'en' or 'fr')")

@@ -3,6 +3,7 @@ import Highcharts from "highcharts";
 import HighchartsDrilldown from "highcharts/modules/drilldown";
 import HighchartsReact from "highcharts-react-official";
 import FloatingSidebar from "./FloatingSidebar";
+import ChatWidget from "./chat/ChatWidget";
 import {
   PortfolioResponse,
   HoldingStats,
@@ -116,6 +117,12 @@ type TourStep = {
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const BAR_VALUE_LABEL_ROTATION = -45;
+const CHAT_API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const CHAT_TRANSLATOR = (value: string) => value;
+const resolveChatLang = () => {
+  if (typeof navigator === "undefined" || !navigator.language) return "en";
+  return navigator.language.split("-")[0] || "en";
+};
 const ALLOCATION_COLORS = [
   "#22c55e",
   "#0ea5e9",
@@ -311,6 +318,7 @@ function App() {
   const [symbolSearchStatus, setSymbolSearchStatus] = useState<Status>({
     kind: "idle",
   });
+  const chatLang = resolveChatLang();
 
   useEffect(() => {
     if (status.kind === "success" || status.kind === "error") {
@@ -5235,6 +5243,10 @@ const computeAnnualizedReturnBetween = (
           </>
         )}
       </main>
+
+      {isAuthed && (
+        <ChatWidget apiBase={CHAT_API_BASE} lang={chatLang} t={CHAT_TRANSLATOR} />
+      )}
 
       {isTourActive && currentTourStep && (
         <div className="help-overlay" role="presentation" onClick={endTour}>

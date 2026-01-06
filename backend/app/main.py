@@ -9,19 +9,24 @@ from threading import Lock
 from typing import Any, List
 
 import httpx
+from uuid import uuid4
+
 import yfinance as yf
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import auth, crud, models, schemas
-from .database import Base, SessionLocal, engine, get_session
+from .database import Base, SessionLocal, engine, get_session, db_session
+from .chatbot.main import ChatBot
 
 log = logging.getLogger("followstocks")
 logging.basicConfig(level=logging.INFO)
+
+chatbot = ChatBot(verbose=False)
 
 Base.metadata.create_all(bind=engine)
 
@@ -500,6 +505,7 @@ _refresh_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _refresh_task
+    await chatbot.initialize()
     if AUTO_REFRESH_ENABLED:
         log.info("Starting auto-refresh task (interval: %ss)", AUTO_REFRESH_SECONDS)
         _refresh_task = asyncio.create_task(auto_refresh_loop())
@@ -512,6 +518,7 @@ async def lifespan(app: FastAPI):
             _refresh_task.cancel()
             with suppress(asyncio.CancelledError):
                 await _refresh_task
+        await chatbot.close()
 
 
 app = FastAPI(title="FollowStocks API", version="0.1.0", lifespan=lifespan)
@@ -1431,3 +1438,19 @@ async def cac40_analysis(
     items, updated_at = await _load_cac40_snapshot()
     scored = _apply_cac40_metric(items, metric)
     return schemas.Cac40AnalysisResponse(metric=metric, updated_at=updated_at, items=scored)
+
+@app.post("/api/chat")
+async def chat_endpoint(payload: schemas.ChatRequest, db=Depends(db_session)):
+    """
+    Stream a response from the LangGraph home agent (read-only SQL over the SQLite DB).
+    """
+
+    session_id = payload.session_id or str(uuid4())
+    return StreamingResponse(
+        chatbot.response_llm(
+            thread_id=session_id,
+            question=payload.message,
+            language=(payload.language or "en").lower(),
+        ),
+        media_type="text/plain",
+    )
