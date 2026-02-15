@@ -4,6 +4,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 CurrencyCode = Literal["USD", "EUR"]
+PriceTracker = Literal["yahoo", "boursorama"]
 PlacementEntryKind = Literal["VALUE", "INITIAL", "INTEREST", "FEE", "CONTRIBUTION", "WITHDRAWAL"]
 
 
@@ -133,6 +134,14 @@ class HoldingBase(BaseModel):
         None,
         description="Asset type (e.g. Equity, ETF, Livret A, LDD)",
     )
+    price_tracker: PriceTracker = Field(
+        "yahoo",
+        description="Market data source (yahoo or boursorama)",
+    )
+    tracker_symbol: Optional[str] = Field(
+        None,
+        description="Tracker-specific symbol (e.g. Boursorama code like 1rASHELL)",
+    )
     name: Optional[str] = Field(None, description="Instrument name")
     href: Optional[str] = Field(None, description="Euronext instrument link")
     isin: Optional[str] = Field(None, description="ISIN identifier if available")
@@ -154,6 +163,26 @@ class HoldingBase(BaseModel):
             return None
         v = str(v).strip()
         return v or None
+
+    @field_validator("price_tracker", mode="before")
+    @classmethod
+    def normalize_price_tracker(cls, v: Optional[str]) -> PriceTracker:
+        if v is None:
+            return "yahoo"  # type: ignore[return-value]
+        tracker = str(v).strip().lower()
+        if tracker in {"yfinance", "yahoo"}:
+            return "yahoo"  # type: ignore[return-value]
+        if tracker in {"boursorama"}:
+            return "boursorama"  # type: ignore[return-value]
+        raise ValueError("price_tracker must be 'yahoo' or 'boursorama'")
+
+    @field_validator("tracker_symbol", mode="before")
+    @classmethod
+    def normalize_tracker_symbol(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = str(v).strip()
+        return value or None
 
 
 class HoldingCreate(HoldingBase):
@@ -183,6 +212,8 @@ class HoldingUpdate(BaseModel):
     sector: Optional[str] = Field(None, description="Sector classification")
     industry: Optional[str] = Field(None, description="Industry classification")
     asset_type: Optional[str] = Field(None, description="Asset type")
+    price_tracker: Optional[PriceTracker] = Field(None, description="Market data source")
+    tracker_symbol: Optional[str] = Field(None, description="Tracker-specific symbol")
     isin: Optional[str] = Field(None, description="ISIN identifier")
     mic: Optional[str] = Field(None, description="Market identifier code")
     name: Optional[str] = Field(None, description="Instrument name")
@@ -199,6 +230,18 @@ class HoldingUpdate(BaseModel):
             raise ValueError("Currency must be USD or EUR")
         return upper  # type: ignore[return-value]
 
+    @field_validator("price_tracker", mode="before")
+    @classmethod
+    def normalize_price_tracker_optional(cls, v: Optional[str]) -> Optional[PriceTracker]:
+        if v is None:
+            return None
+        tracker = str(v).strip().lower()
+        if tracker in {"yfinance", "yahoo"}:
+            return "yahoo"  # type: ignore[return-value]
+        if tracker in {"boursorama"}:
+            return "boursorama"  # type: ignore[return-value]
+        raise ValueError("price_tracker must be 'yahoo' or 'boursorama'")
+
     @field_validator("isin", mode="before")
     @classmethod
     def normalize_isin(cls, v: Optional[str]) -> Optional[str]:
@@ -213,7 +256,7 @@ class HoldingUpdate(BaseModel):
             return None
         return v.strip().upper() or None
 
-    @field_validator("name", "href", "sector", "industry", "asset_type", mode="before")
+    @field_validator("name", "href", "sector", "industry", "asset_type", "tracker_symbol", mode="before")
     @classmethod
     def strip_text_optional(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
@@ -254,6 +297,10 @@ class Holding(HoldingBase):
     created_at: datetime
     updated_at: datetime
     account: Optional[Account] = None
+    yahoo_target_low: Optional[float] = None
+    yahoo_target_mean: Optional[float] = None
+    yahoo_target_high: Optional[float] = None
+    yahoo_target_parsed_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -499,6 +546,8 @@ class BackupHolding(BaseModel):
     id: int
     account_id: int
     symbol: str
+    price_tracker: PriceTracker = "yahoo"
+    tracker_symbol: Optional[str] = None
     shares: float
     cost_basis: float
     acquisition_fee_value: float
@@ -582,6 +631,29 @@ class Cac40AnalysisResponse(BaseModel):
     metric: str
     updated_at: datetime
     items: List[Cac40Item]
+
+
+class AnalystForecastItem(BaseModel):
+    symbol: str
+    name: Optional[str] = None
+    currency: Optional[str] = None
+    price: Optional[float] = None
+    target_low_price: Optional[float] = None
+    target_mean_price: Optional[float] = None
+    target_high_price: Optional[float] = None
+    analyst_count: Optional[int] = None
+    recommendation_mean: Optional[float] = None
+    recommendation_key: Optional[str] = None
+    upside_pct: Optional[float] = None
+
+
+class AnalystForecastResponse(BaseModel):
+    universe: str
+    updated_at: datetime
+    total_symbols: int
+    with_forecast: int
+    items: List[AnalystForecastItem]
+
 
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None

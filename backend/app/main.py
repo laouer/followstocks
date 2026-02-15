@@ -5,6 +5,7 @@ import os
 import statistics
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime
+from pathlib import Path
 from threading import Lock
 from typing import Any, List
 
@@ -20,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import auth, crud, models, schemas
-from .database import Base, SessionLocal, engine, get_session, db_session
+from .database import Base, SessionLocal, engine, get_session, db_session, ensure_holdings_columns
 from .chatbot.main import ChatBot
 
 log = logging.getLogger("followstocks")
@@ -29,12 +30,14 @@ logging.basicConfig(level=logging.INFO)
 chatbot = ChatBot(verbose=False)
 
 Base.metadata.create_all(bind=engine)
+ensure_holdings_columns()
 
 
 AUTO_REFRESH_SECONDS = int(os.getenv("AUTO_REFRESH_SECONDS", "300"))
 AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "true").lower() not in {"0", "false", "no"}
 _refresh_task: asyncio.Task | None = None
 CAC40_CACHE_TTL_SECONDS = int(os.getenv("CAC40_CACHE_TTL_SECONDS", "1800"))
+SBF120_CACHE_TTL_SECONDS = int(os.getenv("SBF120_CACHE_TTL_SECONDS", "1800"))
 
 CAC40_TICKERS = [
     {"symbol": "AC.PA", "name": "Accor"},
@@ -89,6 +92,68 @@ CAC40_METRICS = {
 
 _cac40_cache: dict[str, Any] = {"timestamp": None, "items": None}
 _cac40_cache_lock = asyncio.Lock()
+
+SBF120_EXTRA_TICKERS = [
+    {"symbol": "ADP.PA", "name": "Aeroports de Paris"},
+    {"symbol": "AF.PA", "name": "Air France-KLM"},
+    {"symbol": "AKE.PA", "name": "Arkema"},
+    {"symbol": "ALD.PA", "name": "ALD"},
+    {"symbol": "ATO.PA", "name": "Atos"},
+    {"symbol": "BEN.PA", "name": "Beneteau"},
+    {"symbol": "BIM.PA", "name": "bioMerieux"},
+    {"symbol": "BOL.PA", "name": "Bollore"},
+    {"symbol": "BVI.PA", "name": "Bureau Veritas"},
+    {"symbol": "CARM.PA", "name": "Carmila"},
+    {"symbol": "CDA.PA", "name": "Compagnie des Alpes"},
+    {"symbol": "COFA.PA", "name": "Coface"},
+    {"symbol": "COV.PA", "name": "Covivio"},
+    {"symbol": "DBG.PA", "name": "Derichebourg"},
+    {"symbol": "DEC.PA", "name": "JCDecaux"},
+    {"symbol": "EDF.PA", "name": "EDF"},
+    {"symbol": "ELIOR.PA", "name": "Elior"},
+    {"symbol": "ELIS.PA", "name": "Elis"},
+    {"symbol": "ENX.PA", "name": "Euronext"},
+    {"symbol": "ERA.PA", "name": "Eramet"},
+    {"symbol": "ERF.PA", "name": "Eurofins Scientific"},
+    {"symbol": "ETL.PA", "name": "Eutelsat"},
+    {"symbol": "EXHO.PA", "name": "Sodexo"},
+    {"symbol": "FDJ.PA", "name": "FDJ United"},
+    {"symbol": "FGR.PA", "name": "Eiffage"},
+    {"symbol": "FR.PA", "name": "Valeo"},
+    {"symbol": "GFC.PA", "name": "Gecina"},
+    {"symbol": "GET.PA", "name": "Getlink"},
+    {"symbol": "GTT.PA", "name": "Gaztransport & Technigaz"},
+    {"symbol": "IPN.PA", "name": "Ipsen"},
+    {"symbol": "LI.PA", "name": "Klepierre"},
+    {"symbol": "MAU.PA", "name": "Maurel et Prom"},
+    {"symbol": "MRN.PA", "name": "Mersen"},
+    {"symbol": "NEX.PA", "name": "Nexans"},
+    {"symbol": "NK.PA", "name": "Imerys"},
+    {"symbol": "POM.PA", "name": "OPmobility"},
+    {"symbol": "RCO.PA", "name": "Remy Cointreau"},
+    {"symbol": "RF.PA", "name": "Eurazeo"},
+    {"symbol": "RUI.PA", "name": "Rubis"},
+    {"symbol": "RXL.PA", "name": "Rexel"},
+    {"symbol": "SCR.PA", "name": "SCOR"},
+    {"symbol": "SESL.PA", "name": "SES-imagotag"},
+    {"symbol": "SK.PA", "name": "SEB"},
+    {"symbol": "SMCP.PA", "name": "SMCP"},
+    {"symbol": "SOI.PA", "name": "Soitec"},
+    {"symbol": "SOP.PA", "name": "Sopra Steria"},
+    {"symbol": "SPIE.PA", "name": "SPIE"},
+    {"symbol": "TEP.PA", "name": "Teleperformance"},
+    {"symbol": "TFI.PA", "name": "TF1"},
+    {"symbol": "TKTT.PA", "name": "Tarkett"},
+    {"symbol": "TRI.PA", "name": "Trigano"},
+    {"symbol": "UBI.PA", "name": "Ubisoft"},
+    {"symbol": "VCT.PA", "name": "Vicat"},
+    {"symbol": "VIRP.PA", "name": "Virbac"},
+    {"symbol": "VK.PA", "name": "Vallourec"},
+    {"symbol": "VLA.PA", "name": "Valneva"},
+]
+
+_sbf120_cache: dict[str, Any] = {"timestamp": None, "items": None}
+_sbf120_cache_lock = asyncio.Lock()
 _yfinance_status_lock = Lock()
 _yfinance_status: dict[str, Any] = {
     "ok": True,
@@ -99,6 +164,10 @@ YFINANCE_UNREACHABLE_MESSAGE = (
     "Last prices are not updated because Yahoo Finance is unreachable "
     "(connection lost or blocked)."
 )
+PRICE_TRACKER_YAHOO = "yahoo"
+PRICE_TRACKER_BOURSORAMA = "boursorama"
+PRICE_TRACKERS = {PRICE_TRACKER_YAHOO, PRICE_TRACKER_BOURSORAMA}
+BOURSORAMA_QUOTE_URL = "https://www.boursorama.com/bourse/action/graph/ws/UpdateCharts"
 
 
 def _set_yfinance_error(message: str) -> None:
@@ -126,6 +195,27 @@ def _get_yfinance_status() -> schemas.YahooFinanceStatus:
         )
 
 
+def _normalize_price_tracker(value: str | None) -> str:
+    tracker = (value or PRICE_TRACKER_YAHOO).strip().lower()
+    if tracker == "yfinance":
+        tracker = PRICE_TRACKER_YAHOO
+    if tracker not in PRICE_TRACKERS:
+        tracker = PRICE_TRACKER_YAHOO
+    return tracker
+
+
+def _resolve_tracker_symbol(
+    holding: models.Holding,
+    tracker: str | None = None,
+) -> str | None:
+    tracker = _normalize_price_tracker(tracker or holding.price_tracker)
+    symbol = holding.tracker_symbol if tracker == PRICE_TRACKER_BOURSORAMA else holding.symbol
+    symbol = (symbol or "").strip()
+    if not symbol and tracker == PRICE_TRACKER_BOURSORAMA:
+        symbol = (holding.symbol or "").strip()
+    return symbol or None
+
+
 async def _fetch_yfinance_quote(symbol: str) -> dict:
     symbol = symbol.upper().strip()
 
@@ -135,6 +225,10 @@ async def _fetch_yfinance_quote(symbol: str) -> dict:
             hist = ticker.history(period="1d", interval="1m")
             if hist is None or hist.empty:
                 hist = ticker.history(period="5d", interval="1d")
+                if hist is None or hist.empty:
+                    hist = ticker.history(period="1mo", interval="1mo")
+                    if hist is None or hist.empty:
+                        hist = ticker.history(period="3mo", interval="1mo")
             if hist is None or hist.empty:
                 _set_yfinance_ok()
                 return {"price": None, "timestamp": None, "source": "yfinance"}
@@ -149,6 +243,58 @@ async def _fetch_yfinance_quote(symbol: str) -> dict:
             return {"price": None, "timestamp": None, "source": "yfinance"}
 
     return await asyncio.to_thread(_sync_fetch)
+
+
+def _extract_boursorama_price(payload: Any) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    series = payload.get("d")
+    if not isinstance(series, list) or not series:
+        return None
+    latest = series[-1]
+    if not isinstance(latest, dict):
+        return None
+    ticks = latest.get("qt")
+    if isinstance(ticks, list) and ticks:
+        last_tick = ticks[-1]
+        if isinstance(last_tick, dict):
+            price = _safe_float(last_tick.get("c"))
+            if price is not None:
+                return price
+    return _safe_float(latest.get("c"))
+
+
+async def _fetch_boursorama_quote(symbol: str) -> dict:
+    symbol = symbol.strip()
+    if not symbol:
+        return {"price": None, "timestamp": None, "source": PRICE_TRACKER_BOURSORAMA}
+    try:
+        async with httpx.AsyncClient(timeout=6.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            resp = await client.get(
+                BOURSORAMA_QUOTE_URL,
+                params={"symbol": symbol, "period": -1},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("boursorama quote failed for %s: %s", symbol, exc)
+        return {"price": None, "timestamp": None, "source": PRICE_TRACKER_BOURSORAMA}
+
+    price = _extract_boursorama_price(data)
+    if price is None:
+        return {"price": None, "timestamp": None, "source": PRICE_TRACKER_BOURSORAMA}
+    return {
+        "price": price,
+        "timestamp": datetime.utcnow().isoformat(),
+        "source": PRICE_TRACKER_BOURSORAMA,
+    }
+
+
+async def _fetch_tracker_quote(tracker: str, symbol: str) -> dict:
+    tracker = _normalize_price_tracker(tracker)
+    if tracker == PRICE_TRACKER_BOURSORAMA:
+        return await _fetch_boursorama_quote(symbol)
+    return await _fetch_yfinance_quote(symbol)
 
 
 async def _fetch_fx_rate(base: str, quote: str) -> float | None:
@@ -221,6 +367,54 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _safe_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_ticker_list(raw: str | None) -> list[dict[str, str]]:
+    if not raw:
+        return []
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for token in raw.split(","):
+        value = token.strip()
+        if not value:
+            continue
+        symbol = value
+        name = ""
+        if ":" in value:
+            symbol, name = value.split(":", 1)
+        symbol = symbol.strip().upper()
+        name = name.strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        entries.append({"symbol": symbol, "name": name or symbol})
+    return entries
+
+
+def _build_sbf120_tickers() -> list[dict[str, str]]:
+    configured = _parse_ticker_list(
+        os.getenv("SBF120_SYMBOLS") or os.getenv("BSF120_SYMBOLS")
+    )
+    if configured:
+        return configured
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in [*CAC40_TICKERS, *SBF120_EXTRA_TICKERS]:
+        symbol = entry["symbol"]
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        merged.append({"symbol": symbol, "name": entry.get("name") or symbol})
+    return merged
+
+
 def _normalize_dividend_yield(value: Any) -> float | None:
     dividend_yield = _safe_float(value)
     if dividend_yield is None:
@@ -277,6 +471,54 @@ def _fetch_cac40_symbol(symbol: str, fallback_name: str | None) -> dict | None:
     }
 
 
+def _fetch_sbf120_symbol(symbol: str, fallback_name: str | None) -> dict:
+    # Keep a stable row even when Yahoo data is missing for a symbol.
+    empty = {
+        "symbol": symbol,
+        "name": fallback_name or symbol,
+        "currency": None,
+        "price": None,
+        "target_low_price": None,
+        "target_mean_price": None,
+        "target_high_price": None,
+        "analyst_count": None,
+        "recommendation_mean": None,
+        "recommendation_key": None,
+        "upside_pct": None,
+    }
+    try:
+        info = yf.Ticker(symbol).get_info()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("SBF120 fetch failed for %s: %s", symbol, exc)
+        return empty
+
+    name = info.get("longName") or info.get("shortName") or fallback_name or symbol
+    price = (
+        _safe_float(info.get("regularMarketPrice"))
+        or _safe_float(info.get("currentPrice"))
+        or _safe_float(info.get("previousClose"))
+    )
+    target_mean = _safe_float(info.get("targetMeanPrice"))
+    upside_pct = (
+        (target_mean - price) / price
+        if price is not None and price > 0 and target_mean is not None
+        else None
+    )
+    return {
+        "symbol": symbol,
+        "name": name,
+        "currency": info.get("currency"),
+        "price": price,
+        "target_low_price": _safe_float(info.get("targetLowPrice")),
+        "target_mean_price": target_mean,
+        "target_high_price": _safe_float(info.get("targetHighPrice")),
+        "analyst_count": _safe_int(info.get("numberOfAnalystOpinions")),
+        "recommendation_mean": _safe_float(info.get("recommendationMean")),
+        "recommendation_key": info.get("recommendationKey"),
+        "upside_pct": upside_pct,
+    }
+
+
 async def _load_cac40_snapshot() -> tuple[list[dict], datetime]:
     now = datetime.utcnow()
     cached_at = _cac40_cache.get("timestamp")
@@ -302,6 +544,34 @@ async def _load_cac40_snapshot() -> tuple[list[dict], datetime]:
         items = [item for item in results if item]
         _cac40_cache["timestamp"] = now
         _cac40_cache["items"] = items
+        return items, now
+
+
+async def _load_sbf120_snapshot() -> tuple[list[dict], datetime]:
+    now = datetime.utcnow()
+    cached_at = _sbf120_cache.get("timestamp")
+    if cached_at and (now - cached_at).total_seconds() < SBF120_CACHE_TTL_SECONDS:
+        cached_items = _sbf120_cache.get("items") or []
+        return cached_items, cached_at
+
+    async with _sbf120_cache_lock:
+        cached_at = _sbf120_cache.get("timestamp")
+        if cached_at and (now - cached_at).total_seconds() < SBF120_CACHE_TTL_SECONDS:
+            cached_items = _sbf120_cache.get("items") or []
+            return cached_items, cached_at
+
+        tickers = _build_sbf120_tickers()
+        semaphore = asyncio.Semaphore(6)
+
+        async def _runner(entry: dict[str, str]) -> dict:
+            async with semaphore:
+                return await asyncio.to_thread(
+                    _fetch_sbf120_symbol, entry["symbol"], entry.get("name")
+                )
+
+        items = await asyncio.gather(*[_runner(entry) for entry in tickers])
+        _sbf120_cache["timestamp"] = now
+        _sbf120_cache["items"] = items
         return items, now
 
 
@@ -431,31 +701,32 @@ def _upsert_snapshot_from_quote(
     return True
 
 
-def _group_holdings_by_symbol(
+def _group_holdings_by_tracker(
     holdings: list[models.Holding],
-) -> dict[str, list[models.Holding]]:
-    grouped: dict[str, list[models.Holding]] = {}
+) -> dict[tuple[str, str], list[models.Holding]]:
+    grouped: dict[tuple[str, str], list[models.Holding]] = {}
     for holding in holdings:
-        symbol = (holding.symbol or "").upper().strip()
+        tracker = _normalize_price_tracker(getattr(holding, "price_tracker", None))
+        symbol = _resolve_tracker_symbol(holding, tracker)
         if not symbol:
             continue
-        grouped.setdefault(symbol, []).append(holding)
+        grouped.setdefault((tracker, symbol), []).append(holding)
     return grouped
 
 
 async def _refresh_grouped_holdings(
-    db: Session, grouped: dict[str, list[models.Holding]]
+    db: Session, grouped: dict[tuple[str, str], list[models.Holding]]
 ) -> None:
-    for symbol, symbol_holdings in grouped.items():
+    for (tracker, symbol), symbol_holdings in grouped.items():
         try:
-            quote = await _fetch_yfinance_quote(symbol)
+            quote = await _fetch_tracker_quote(tracker, symbol)
         except Exception as exc:  # broad catch to keep the loop running
-            log.warning("Auto-refresh: failed to fetch %s: %s", symbol, exc)
+            log.warning("Auto-refresh: failed to fetch %s (%s): %s", symbol, tracker, exc)
             continue
 
         price = quote.get("price")
         if price is None:
-            log.warning("Auto-refresh: no price returned for %s", symbol)
+            log.warning("Auto-refresh: no price returned for %s (%s)", symbol, tracker)
             continue
 
         stored_any = False
@@ -466,13 +737,18 @@ async def _refresh_grouped_holdings(
                 stored_any = stored_any or stored
             except IntegrityError as exc:
                 db.rollback()
-                log.warning("Auto-refresh: integrity issue for %s: %s", symbol, exc)
+                log.warning("Auto-refresh: integrity issue for %s (%s): %s", symbol, tracker, exc)
             except Exception as exc:  # broad catch to keep processing
                 db.rollback()
-                log.warning("Auto-refresh: failed to store snapshot for %s: %s", symbol, exc)
+                log.warning("Auto-refresh: failed to store snapshot for %s (%s): %s", symbol, tracker, exc)
 
         if stored_any:
-            log.info("Auto-refresh: stored price for %s (%d holdings)", symbol, len(symbol_holdings))
+            log.info(
+                "Auto-refresh: stored price for %s (%s) (%d holdings)",
+                symbol,
+                tracker,
+                len(symbol_holdings),
+            )
 
 
 async def refresh_holdings_prices_once() -> None:
@@ -483,7 +759,7 @@ async def refresh_holdings_prices_once() -> None:
             log.info("Auto-refresh: no holdings to refresh.")
             return
 
-        grouped = _group_holdings_by_symbol(holdings)
+        grouped = _group_holdings_by_tracker(holdings)
         await _refresh_grouped_holdings(db, grouped)
 
 
@@ -668,7 +944,10 @@ async def create_holding(
             new_liquidity = 0.0
         else:
             raise HTTPException(status_code=400, detail="Insufficient account liquidity for this buy")
-    created = crud.create_holding(db, current_user.id, holding)
+    try:
+        created = crud.create_holding(db, current_user.id, holding)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         account.liquidity = new_liquidity
         account.updated_at = datetime.utcnow()
@@ -697,7 +976,7 @@ async def create_holding(
             .filter(models.Holding.symbol == created.symbol)
             .all()
         )
-        grouped = _group_holdings_by_symbol(holdings)
+        grouped = _group_holdings_by_tracker(holdings)
         await _refresh_grouped_holdings(db, grouped)
     except Exception as exc:  # noqa: BLE001
         log.warning("Failed to fetch/store initial price for %s: %s", created.symbol, exc)
@@ -1227,6 +1506,8 @@ async def import_backup(
                 user_id=current_user.id,
                 account_id=account_id,
                 symbol=holding.symbol,
+                price_tracker=holding.price_tracker or PRICE_TRACKER_YAHOO,
+                tracker_symbol=holding.tracker_symbol,
                 shares=holding.shares,
                 cost_basis=holding.cost_basis,
                 acquisition_fee_value=holding.acquisition_fee_value,
@@ -1314,6 +1595,25 @@ def update_holding(
         account = crud.get_account(db, current_user.id, payload.account_id)
         if not account:
             raise HTTPException(status_code=400, detail="Account not found")
+    if payload.price_tracker is not None or payload.tracker_symbol is not None:
+        next_tracker = _normalize_price_tracker(
+            payload.price_tracker or getattr(holding, "price_tracker", None)
+        )
+        next_symbol = (
+            payload.tracker_symbol
+            if payload.tracker_symbol is not None
+            else getattr(holding, "tracker_symbol", None)
+        )
+        if next_tracker == PRICE_TRACKER_BOURSORAMA and not next_symbol:
+            fallback_symbol = holding.symbol
+            if not fallback_symbol:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Tracker symbol is required for Boursorama quotes",
+                )
+            payload = payload.model_copy(update={"tracker_symbol": fallback_symbol})
+        if payload.price_tracker is not None and next_tracker == PRICE_TRACKER_YAHOO:
+            payload = payload.model_copy(update={"tracker_symbol": None})
     return crud.update_holding(db, holding, payload)
 
 
@@ -1385,6 +1685,31 @@ def get_portfolio(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/agents/yahoo-targets")
+async def run_yahoo_targets(
+    current_user: models.User = Depends(auth.get_current_user),
+) -> dict:
+    output_path = Path(__file__).resolve().parents[1] / "yahoo_targets.json"
+    try:
+        from .yahoo_finance_agent import run as run_yahoo_agent
+
+        await asyncio.to_thread(run_yahoo_agent, output_path, None)
+        return {"status": "ok", "output": str(output_path)}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="Failed to run Yahoo targets") from exc
+
+
+@app.post("/holdings/refresh")
+async def refresh_holdings_prices(
+    current_user: models.User = Depends(auth.get_current_user),
+) -> dict:
+    try:
+        await refresh_holdings_prices_once()
+        return {"status": "ok"}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="Failed to refresh holdings prices") from exc
+
+
 @app.get("/search", response_model=Any)
 async def search_instruments(q: str = Query(..., min_length=1, description="Symbol search term")):
     try:
@@ -1408,6 +1733,22 @@ async def yfinance_quote(
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail="yfinance quote error") from exc
+
+
+@app.get("/quotes/boursorama")
+async def boursorama_quote(
+    symbol: str = Query(..., min_length=1, description="Boursorama symbol"),
+) -> dict:
+    symbol = symbol.strip()
+    try:
+        quote = await _fetch_boursorama_quote(symbol)
+        if quote.get("price") is None:
+            raise HTTPException(status_code=502, detail="No price returned from boursorama")
+        return {**quote, "symbol": symbol}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="boursorama quote error") from exc
 
 
 @app.get("/fx")
@@ -1438,6 +1779,34 @@ async def cac40_analysis(
     items, updated_at = await _load_cac40_snapshot()
     scored = _apply_cac40_metric(items, metric)
     return schemas.Cac40AnalysisResponse(metric=metric, updated_at=updated_at, items=scored)
+
+
+@app.get("/analysis/bsf120", response_model=schemas.AnalystForecastResponse)
+@app.get("/analysis/sbf120", response_model=schemas.AnalystForecastResponse)
+async def bsf120_analyst_forecasts(
+    include_missing: bool = Query(
+        False,
+        description="include symbols with no analyst target mean",
+    ),
+) -> schemas.AnalystForecastResponse:
+    items, updated_at = await _load_sbf120_snapshot()
+    with_forecast = sum(1 for item in items if item.get("target_mean_price") is not None)
+    visible_items = (
+        items
+        if include_missing
+        else [item for item in items if item.get("target_mean_price") is not None]
+    )
+    visible_items.sort(
+        key=lambda entry: (entry.get("upside_pct") is None, -(entry.get("upside_pct") or 0)),
+    )
+    return schemas.AnalystForecastResponse(
+        universe="BSF120",
+        updated_at=updated_at,
+        total_symbols=len(items),
+        with_forecast=with_forecast,
+        items=visible_items,
+    )
+
 
 @app.post("/api/chat")
 async def chat_endpoint(payload: schemas.ChatRequest, db=Depends(db_session)):

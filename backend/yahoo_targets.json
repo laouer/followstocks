@@ -1,0 +1,474 @@
+{
+  "generated_at": "2026-02-12T07:05:53.752125",
+  "source": "yahoo_finance",
+  "items": [
+    {
+      "holding_id": 1,
+      "symbol": "SAFF",
+      "name": "SAFRAN INVESTISSMENT",
+      "href": "https://epargnants.interepargne.natixis.fr/front/fund-synthesis",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 2,
+      "symbol": "SAFFDYN",
+      "name": "SAFRAN DYNAMIQUE",
+      "href": "https://epargnants.interepargne.natixis.fr/front/fund-synthesis",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 3,
+      "symbol": "BNP.PA",
+      "name": "BNP Paribas SA",
+      "href": "https://fr.finance.yahoo.com/quote/BNP.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 78.5,
+      "target_mean": 98.87368,
+      "target_high": 110.0,
+      "targets": {
+        "min": 78.5,
+        "mean": 98.87368,
+        "max": 110.0
+      }
+    },
+    {
+      "holding_id": 4,
+      "symbol": "ESE.PA",
+      "name": "BNP Paribas Easy S&P 500 UCITS ETF EUR C",
+      "href": "https://fr.finance.yahoo.com/quote/ESE.PA/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 5,
+      "symbol": "PUST.PA",
+      "name": "Amundi PEA Nasdaq-100 UCITS ETF Acc",
+      "href": "https://fr.finance.yahoo.com/quote/PUST.PA/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 6,
+      "symbol": "VIE.PA",
+      "name": "Veolia Environnement SA",
+      "href": "https://fr.finance.yahoo.com/quote/VIE.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 32.5,
+      "target_mean": 36.21765,
+      "target_high": 45.3,
+      "targets": {
+        "min": 32.5,
+        "mean": 36.21765,
+        "max": 45.3
+      }
+    },
+    {
+      "holding_id": 7,
+      "symbol": "WPEA.PA",
+      "name": "iShares MSCI World Swap PEA UCITS ETF",
+      "href": "https://fr.finance.yahoo.com/quote/WPEA.PA/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 8,
+      "symbol": "SONO",
+      "name": "Sonos, Inc.",
+      "href": "https://fr.finance.yahoo.com/quote/SONO/",
+      "status": "ok",
+      "message": null,
+      "target_low": 17.5,
+      "target_mean": 19.375,
+      "target_high": 21.0,
+      "targets": {
+        "min": 17.5,
+        "mean": 19.375,
+        "max": 21.0
+      }
+    },
+    {
+      "holding_id": 9,
+      "symbol": "1KER.MI",
+      "name": "Kering SA",
+      "href": "https://fr.finance.yahoo.com/quote/1KER.MI/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 10,
+      "symbol": "DSY.PA",
+      "name": "Dassault Syst\u00e8mes SE",
+      "href": "https://fr.finance.yahoo.com/quote/DSY.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 16.0,
+      "target_mean": 29.106,
+      "target_high": 43.0,
+      "targets": {
+        "min": 16.0,
+        "mean": 29.106,
+        "max": 43.0
+      }
+    },
+    {
+      "holding_id": 11,
+      "symbol": "GIVN.SW",
+      "name": "Givaudan SA",
+      "href": "https://fr.finance.yahoo.com/quote/GIVN.SW/",
+      "status": "ok",
+      "message": null,
+      "target_low": 2900.0,
+      "target_mean": 3692.08,
+      "target_high": 5040.0,
+      "targets": {
+        "min": 2900.0,
+        "mean": 3692.08,
+        "max": 5040.0
+      }
+    },
+    {
+      "holding_id": 12,
+      "symbol": "NESN.SW",
+      "name": "Nestl\u00e9 S.A.",
+      "href": "https://fr.finance.yahoo.com/quote/NESN.SW/",
+      "status": "ok",
+      "message": null,
+      "target_low": 68.0,
+      "target_mean": 87.01909,
+      "target_high": 104.0,
+      "targets": {
+        "min": 68.0,
+        "mean": 87.01909,
+        "max": 104.0
+      }
+    },
+    {
+      "holding_id": 13,
+      "symbol": "SGSN.SW",
+      "name": "SGS SA",
+      "href": "https://fr.finance.yahoo.com/quote/SGSN.SW/",
+      "status": "ok",
+      "message": null,
+      "target_low": 80.0,
+      "target_mean": 96.71053,
+      "target_high": 117.0,
+      "targets": {
+        "min": 80.0,
+        "mean": 96.71053,
+        "max": 117.0
+      }
+    },
+    {
+      "holding_id": 14,
+      "symbol": "BESI.AS",
+      "name": "BE Semiconductor Industries N.V.",
+      "href": "https://fr.finance.yahoo.com/quote/BESI.AS/",
+      "status": "ok",
+      "message": null,
+      "target_low": 105.0,
+      "target_mean": 171.09091,
+      "target_high": 220.0,
+      "targets": {
+        "min": 105.0,
+        "mean": 171.09091,
+        "max": 220.0
+      }
+    },
+    {
+      "holding_id": 15,
+      "symbol": "NVDA",
+      "name": "NVIDIA Corporation",
+      "href": "https://fr.finance.yahoo.com/quote/NVDA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 140.0,
+      "target_mean": 253.7938,
+      "target_high": 352.0,
+      "targets": {
+        "min": 140.0,
+        "mean": 253.7938,
+        "max": 352.0
+      }
+    },
+    {
+      "holding_id": 17,
+      "symbol": "0P000010FQ.F",
+      "name": "BNP Paribas Bond 6 M Classic C",
+      "href": "https://fr.finance.yahoo.com/quote/0P000010FQ.F/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 18,
+      "symbol": "0P0000X9YF.F",
+      "name": "S\u00e9lect-Actions Europe",
+      "href": "https://fr.finance.yahoo.com/quote/0P0000X9YF.F/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 19,
+      "symbol": "ROG.SW",
+      "name": "Roche Holding AG",
+      "href": "https://fr.finance.yahoo.com/quote/ROG.SW/",
+      "status": "ok",
+      "message": null,
+      "target_low": 230.0,
+      "target_mean": 353.3035,
+      "target_high": 428.0,
+      "targets": {
+        "min": 230.0,
+        "mean": 353.3035,
+        "max": 428.0
+      }
+    },
+    {
+      "holding_id": 20,
+      "symbol": "SHEL",
+      "name": "Shell plc",
+      "href": "https://www.boursorama.com/cours/1rASHELL/",
+      "status": "unsupported_source",
+      "message": "Holding is not tagged for Yahoo Finance",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 21,
+      "symbol": "DSY.PA",
+      "name": "Dassault Syst\u00e8mes SE",
+      "href": "https://fr.finance.yahoo.com/quote/DSY.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 16.0,
+      "target_mean": 29.106,
+      "target_high": 43.0,
+      "targets": {
+        "min": 16.0,
+        "mean": 29.106,
+        "max": 43.0
+      }
+    },
+    {
+      "holding_id": 22,
+      "symbol": "DIM.PA",
+      "name": "Sartorius Stedim Biotech S.A.",
+      "href": "https://fr.finance.yahoo.com/quote/DIM.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 210.0,
+      "target_mean": 238.57143,
+      "target_high": 275.0,
+      "targets": {
+        "min": 210.0,
+        "mean": 238.57143,
+        "max": 275.0
+      }
+    },
+    {
+      "holding_id": 23,
+      "symbol": "AI.PA",
+      "name": "L'Air Liquide S.A.",
+      "href": "https://fr.finance.yahoo.com/quote/AI.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 154.0,
+      "target_mean": 194.4762,
+      "target_high": 216.0,
+      "targets": {
+        "min": 154.0,
+        "mean": 194.4762,
+        "max": 216.0
+      }
+    },
+    {
+      "holding_id": 24,
+      "symbol": "SAF.PA",
+      "name": "Safran SA",
+      "href": "https://fr.finance.yahoo.com/quote/SAF.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 257.0,
+      "target_mean": 338.90857,
+      "target_high": 382.0,
+      "targets": {
+        "min": 257.0,
+        "mean": 338.90857,
+        "max": 382.0
+      }
+    },
+    {
+      "holding_id": 25,
+      "symbol": "SK.PA",
+      "name": "SEB SA",
+      "href": "https://fr.finance.yahoo.com/quote/SK.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 60.0,
+      "target_mean": 76.54545,
+      "target_high": 102.0,
+      "targets": {
+        "min": 60.0,
+        "mean": 76.54545,
+        "max": 102.0
+      }
+    },
+    {
+      "holding_id": 26,
+      "symbol": "OR.PA",
+      "name": "L'Or\u00e9al S.A.",
+      "href": "https://fr.finance.yahoo.com/quote/OR.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 337.0,
+      "target_mean": 399.1,
+      "target_high": 440.0,
+      "targets": {
+        "min": 337.0,
+        "mean": 399.1,
+        "max": 440.0
+      }
+    },
+    {
+      "holding_id": 27,
+      "symbol": "MC.PA",
+      "name": "LVMH Mo\u00ebt Hennessy - Louis Vuitton, Soci\u00e9t\u00e9 Europ\u00e9enne",
+      "href": "https://fr.finance.yahoo.com/quote/MC.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 434.6,
+      "target_mean": 644.76294,
+      "target_high": 825.0,
+      "targets": {
+        "min": 434.6,
+        "mean": 644.76294,
+        "max": 825.0
+      }
+    },
+    {
+      "holding_id": 28,
+      "symbol": "TTE.PA",
+      "name": "TotalEnergies SE",
+      "href": "https://fr.finance.yahoo.com/quote/TTE.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 52.074364,
+      "target_mean": 63.240154,
+      "target_high": 77.98179,
+      "targets": {
+        "min": 52.074364,
+        "mean": 63.240154,
+        "max": 77.98179
+      }
+    },
+    {
+      "holding_id": 29,
+      "symbol": "EL.PA",
+      "name": "EssilorLuxottica Soci\u00e9t\u00e9 anonyme",
+      "href": "https://fr.finance.yahoo.com/quote/EL.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 180.0,
+      "target_mean": 318.27274,
+      "target_high": 365.0,
+      "targets": {
+        "min": 180.0,
+        "mean": 318.27274,
+        "max": 365.0
+      }
+    },
+    {
+      "holding_id": 30,
+      "symbol": "BESI.AS",
+      "name": "BE Semiconductor Industries N.V.",
+      "href": "https://fr.finance.yahoo.com/quote/BESI.AS/",
+      "status": "ok",
+      "message": null,
+      "target_low": 105.0,
+      "target_mean": 171.09091,
+      "target_high": 220.0,
+      "targets": {
+        "min": 105.0,
+        "mean": 171.09091,
+        "max": 220.0
+      }
+    },
+    {
+      "holding_id": 31,
+      "symbol": "0P00000T0T.F",
+      "name": "AXA PEA R\u00e9gularit\u00e9 C",
+      "href": "https://fr.finance.yahoo.com/quote/0P00000T0T.F/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 32,
+      "symbol": "0P0000A5CJ.F",
+      "name": "CM-AM PEA S\u00e9curit\u00e9 RC",
+      "href": "https://fr.finance.yahoo.com/quote/0P0000A5CJ.F/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 33,
+      "symbol": "0P0000X9YF.F",
+      "name": "S\u00e9lect-Actions Europe",
+      "href": "https://fr.finance.yahoo.com/quote/0P0000X9YF.F/",
+      "status": "not_found",
+      "message": "No analyst targets available",
+      "target_low": null,
+      "target_mean": null,
+      "target_high": null
+    },
+    {
+      "holding_id": 34,
+      "symbol": "SK.PA",
+      "name": "SEB SA",
+      "href": "https://fr.finance.yahoo.com/quote/SK.PA/",
+      "status": "ok",
+      "message": null,
+      "target_low": 60.0,
+      "target_mean": 76.54545,
+      "target_high": 102.0,
+      "targets": {
+        "min": 60.0,
+        "mean": 76.54545,
+        "max": 102.0
+      }
+    }
+  ]
+}

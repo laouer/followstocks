@@ -39,6 +39,8 @@ import {
   addPlacementSnapshot,
   updatePlacementSnapshot,
   deletePlacementSnapshot,
+  runYahooTargetsAgent,
+  refreshHoldingsPrices,
 } from "./api";
 
 const applyDrilldown =
@@ -292,6 +294,8 @@ function App() {
   const [authStatus, setAuthStatus] = useState<Status>({ kind: "idle" });
   const [holdingForm, setHoldingForm] = useState({
     symbol: "",
+    price_tracker: "yahoo",
+    tracker_symbol: "",
     shares: "",
     cost_basis: "",
     acquisition_fee_value: "",
@@ -364,6 +368,7 @@ function App() {
   const [accountDeleteTarget, setAccountDeleteTarget] = useState<Account | null>(null);
   const [cashTargetAccount, setCashTargetAccount] = useState<Account | null>(null);
   const [holdingActionsTarget, setHoldingActionsTarget] = useState<HoldingStats | null>(null);
+  const [holdingAccountFilter, setHoldingAccountFilter] = useState<string>("all");
   const [holdingConfirmTarget, setHoldingConfirmTarget] = useState<{
     holding: HoldingStats;
     mode: "delete" | "refund";
@@ -603,6 +608,13 @@ function App() {
     () => new Map(accounts.map((account) => [account.id, account])),
     [accounts]
   );
+  useEffect(() => {
+    if (holdingAccountFilter === "all") return;
+    const exists = accounts.some((account) => String(account.id) === holdingAccountFilter);
+    if (!exists) {
+      setHoldingAccountFilter("all");
+    }
+  }, [accounts, holdingAccountFilter]);
   const defaultAccountId = useMemo(() => {
     if (!accounts.length) return null;
     const main = accounts.find((account) => account.name.toLowerCase() === "main");
@@ -615,14 +627,32 @@ function App() {
     if (!accountId) return null;
     return accounts.find((account) => account.id === accountId) || null;
   }, [accounts, holdingForm.account_id, defaultAccountId]);
-  const chartHoldings = useMemo(
-    () => holdings.filter((holding) => !excludedHoldings.has(holding.id)),
-    [holdings, excludedHoldings]
-  );
-  const chartPlacements = useMemo(
-    () => placements.filter((placement) => !excludedPlacements.has(placement.id)),
-    [placements, excludedPlacements]
-  );
+  const chartHoldings = useMemo(() => {
+    if (holdingAccountFilter === "all") {
+      return holdings.filter((holding) => !excludedHoldings.has(holding.id));
+    }
+    const accountId = Number(holdingAccountFilter);
+    if (!Number.isFinite(accountId)) {
+      return holdings.filter((holding) => !excludedHoldings.has(holding.id));
+    }
+    return holdings.filter((holding) => {
+      const holdingAccountId = holding.account_id ?? holding.account?.id ?? null;
+      return holdingAccountId === accountId && !excludedHoldings.has(holding.id);
+    });
+  }, [holdings, excludedHoldings, holdingAccountFilter]);
+  const chartPlacements = useMemo(() => {
+    if (holdingAccountFilter === "all") {
+      return placements.filter((placement) => !excludedPlacements.has(placement.id));
+    }
+    const accountId = Number(holdingAccountFilter);
+    if (!Number.isFinite(accountId)) {
+      return placements.filter((placement) => !excludedPlacements.has(placement.id));
+    }
+    return placements.filter((placement) => {
+      const placementAccountId = placement.account_id ?? null;
+      return placementAccountId === accountId && !excludedPlacements.has(placement.id);
+    });
+  }, [placements, excludedPlacements, holdingAccountFilter]);
   const summary = portfolio?.summary;
   const totalCurrency = DISPLAY_CURRENCY;
   const isAuthed = Boolean(authToken);
@@ -2414,22 +2444,24 @@ const computeAnnualizedReturnBetween = (
     CHART_GROUP_OPTIONS.find((option) => option.value === chartGroupBy)?.label || "Holding";
   const hasHoldings = holdings.length > 0;
   const hasPlacements = placements.length > 0;
+  const chartHasHoldings = chartHoldings.length > 0;
+  const chartHasPlacements = chartPlacements.length > 0;
   const allHoldingsIncluded = holdings.length > 0 && excludedHoldings.size === 0;
   const allPlacementsIncluded = placements.length > 0 && excludedPlacements.size === 0;
   const allocationEmptyMessage =
-    !hasHoldings && !hasPlacements
+    !chartHasHoldings && !chartHasPlacements
       ? "Add holdings or placements to see the breakdown."
-      : hasHoldings && hasPlacements
+      : chartHasHoldings && chartHasPlacements
         ? "Select holdings or placements to see the breakdown."
-        : hasHoldings
+        : chartHasHoldings
           ? "Select holdings to see the breakdown."
           : "Select placements to see the breakdown.";
   const plEmptyMessage =
-    !hasHoldings && !hasPlacements
+    !chartHasHoldings && !chartHasPlacements
       ? "Add holdings or placements to see the P/L breakdown."
-      : hasHoldings && hasPlacements
+      : chartHasHoldings && chartHasPlacements
         ? "Select holdings/prices or placements to see the P/L breakdown."
-        : hasHoldings
+        : chartHasHoldings
           ? "Select holdings/prices to see the P/L breakdown."
           : "Select placements to see the P/L breakdown.";
   const sortedPlacements = useMemo(
@@ -2443,6 +2475,53 @@ const computeAnnualizedReturnBetween = (
       return sum + (converted ?? 0);
     }, 0);
   }, [placements, fxRates]);
+  const holdingsTotal = useMemo(() => {
+    if (!holdings.length) return null;
+    return holdings.reduce((sum, holding) => {
+      const marketValueNative =
+        holding.last_price !== null && holding.last_price !== undefined
+          ? holding.last_price * holding.shares
+          : holding.market_value;
+      const converted = convertAmount(
+        marketValueNative,
+        holding.currency,
+        holding.fx_rate,
+        true
+      );
+      return sum + (converted ?? 0);
+    }, 0);
+  }, [holdings, fxRates]);
+  const filteredHoldings = useMemo(() => {
+    if (holdingAccountFilter === "all") return holdings;
+    const accountId = Number(holdingAccountFilter);
+    if (!Number.isFinite(accountId)) return holdings;
+    return holdings.filter((holding) => {
+      const holdingAccountId = holding.account_id ?? holding.account?.id ?? null;
+      return holdingAccountId === accountId;
+    });
+  }, [holdings, holdingAccountFilter]);
+  const filteredHoldingsTotal = useMemo(() => {
+    if (!filteredHoldings.length) return null;
+    return filteredHoldings.reduce((sum, holding) => {
+      const marketValueNative =
+        holding.last_price !== null && holding.last_price !== undefined
+          ? holding.last_price * holding.shares
+          : holding.market_value;
+      const converted = convertAmount(
+        marketValueNative,
+        holding.currency,
+        holding.fx_rate,
+        true
+      );
+      return sum + (converted ?? 0);
+    }, 0);
+  }, [filteredHoldings, fxRates]);
+  const holdingCountLabel =
+    holdingAccountFilter === "all"
+      ? `${holdings.length} tracked`
+      : `${filteredHoldings.length} of ${holdings.length} tracked`;
+  const displayedHoldingsTotal =
+    holdingAccountFilter === "all" ? holdingsTotal : filteredHoldingsTotal;
   const accountHoldingsCount = useMemo(() => {
     const counts = new Map<number, number>();
     holdings.forEach((holding) => {
@@ -2609,7 +2688,7 @@ const computeAnnualizedReturnBetween = (
   }, [accountRows, totalAllocationValue]);
 
   const sortedHoldings = useMemo(() => {
-    const list = [...holdings];
+    const list = [...filteredHoldings];
     const getValue = (h: HoldingStats) => {
       switch (sortField) {
         case "instrument":
@@ -2661,7 +2740,7 @@ const computeAnnualizedReturnBetween = (
     });
 
     return list;
-  }, [holdings, sortField, sortDir]);
+  }, [filteredHoldings, sortField, sortDir]);
 
   const handleSort = (field: SortField) => {
     setSortDir((prev) => (field === sortField ? (prev === "asc" ? "desc" : "asc") : "desc"));
@@ -3163,6 +3242,14 @@ const computeAnnualizedReturnBetween = (
       });
       return;
     }
+    const tracker = (holdingForm.price_tracker || "yahoo").toLowerCase();
+    if (tracker === "boursorama" && !holdingForm.tracker_symbol.trim()) {
+      setStatus({
+        kind: "error",
+        message: "Enter the Boursorama tracker symbol (e.g. 1rASHELL)",
+      });
+      return;
+    }
     const currency = (holdingForm.currency || "EUR").toUpperCase();
     let fxRate: number | undefined;
     if (currency !== "EUR" && holdingForm.fx_rate !== "") {
@@ -3188,6 +3275,10 @@ const computeAnnualizedReturnBetween = (
         : Number(holdingForm.acquisition_fee_value);
     const payload = {
       symbol: holdingForm.symbol.trim(),
+      price_tracker: tracker as "yahoo" | "boursorama",
+      ...(tracker === "boursorama"
+        ? { tracker_symbol: holdingForm.tracker_symbol.trim() }
+        : {}),
       shares: Number(holdingForm.shares),
       cost_basis: Number(holdingForm.cost_basis),
       acquisition_fee_value: feeValue,
@@ -3214,6 +3305,8 @@ const computeAnnualizedReturnBetween = (
       }
       setHoldingForm({
         symbol: "",
+        price_tracker: "yahoo",
+        tracker_symbol: "",
         shares: "",
         cost_basis: "",
         acquisition_fee_value: "",
@@ -3466,14 +3559,16 @@ const computeAnnualizedReturnBetween = (
     const sector = (holding.sector || "").toLowerCase();
     const industry = (holding.industry || "").toLowerCase();
     const symbol = (holding.symbol || "").toLowerCase();
+    const priceTracker = holding.price_tracker === "boursorama" ? "boursorama" : "yahoo";
     const likelyManual =
-      !holding.mic ||
-      assetType.includes("savings") ||
-      sector.includes("cash") ||
-      industry.includes("savings") ||
-      symbol.includes("livret") ||
-      symbol === "ldd" ||
-      (!assetType.includes("equity") && !assetType.includes("etf"));
+      priceTracker !== "boursorama" &&
+      (!holding.mic ||
+        assetType.includes("savings") ||
+        sector.includes("cash") ||
+        industry.includes("savings") ||
+        symbol.includes("livret") ||
+        symbol === "ldd" ||
+        (!assetType.includes("equity") && !assetType.includes("etf")));
     const hasManualPrice =
       holding.last_price !== null && holding.last_price !== undefined && likelyManual;
     const manualLastPriceAtValue =
@@ -3482,6 +3577,8 @@ const computeAnnualizedReturnBetween = (
         : formatDateTimeLocal();
     setHoldingForm({
       symbol: holding.symbol,
+      price_tracker: priceTracker,
+      tracker_symbol: holding.tracker_symbol || "",
       shares: String(holding.shares),
       cost_basis: String(holding.cost_basis),
       acquisition_fee_value:
@@ -3607,6 +3704,34 @@ const computeAnnualizedReturnBetween = (
       setStatus({ kind: "success", message: "Backup exported." });
     } catch (err) {
       setStatus({ kind: "error", message: "Failed to export backup" });
+    }
+  };
+
+  const handleRunYahooTargets = async () => {
+    setStatus({ kind: "loading", message: "Updating Yahoo targets..." });
+    try {
+      await runYahooTargetsAgent();
+      await loadPortfolio();
+      setStatus({ kind: "success", message: "Yahoo targets updated." });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to update Yahoo targets";
+      setStatus({ kind: "error", message: detail });
+    }
+  };
+
+  const handleRefreshPrices = async () => {
+    setStatus({ kind: "loading", message: "Refreshing latest prices..." });
+    try {
+      await refreshHoldingsPrices();
+      await loadPortfolio();
+      setStatus({ kind: "success", message: "Prices updated." });
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to refresh prices";
+      setStatus({ kind: "error", message: detail });
     }
   };
 
@@ -4205,6 +4330,26 @@ const computeAnnualizedReturnBetween = (
                         </button>
                         <button
                           type="button"
+                          className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            handleRunYahooTargets();
+                          }}
+                        >
+                          Run Yahoo targets
+                        </button>
+                        <button
+                          type="button"
+                          className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            handleRefreshPrices();
+                          }}
+                        >
+                          Refresh prices
+                        </button>
+                        <button
+                          type="button"
                           className="user-menu-item danger"
                           onClick={() => {
                             setIsUserMenuOpen(false);
@@ -4714,7 +4859,28 @@ const computeAnnualizedReturnBetween = (
               <h2>Positions</h2>
             </div>
             <div className="card-actions">
-              <span className="pill ghost">{holdings.length} tracked</span>
+              <label className="chart-group-label">
+                Account
+                <select
+                  className="chart-select"
+                  value={holdingAccountFilter}
+                  onChange={(e) => setHoldingAccountFilter(e.target.value)}
+                >
+                  <option value="all">All accounts</option>
+                  {accounts.map((account) => (
+                    <option key={account.id} value={String(account.id)}>
+                      {account.name}
+                      {account.account_type ? ` · ${account.account_type}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span className="pill ghost">{holdingCountLabel}</span>
+              {displayedHoldingsTotal !== null && (
+                <span className="pill ghost">
+                  {formatMoney(displayedHoldingsTotal, totalCurrency)} total
+                </span>
+              )}
               <button
                   type="button"
                   className="button primary compact"
@@ -4723,6 +4889,8 @@ const computeAnnualizedReturnBetween = (
                     setEditingHoldingId(null);
                     setHoldingForm({
                       symbol: "",
+                      price_tracker: "yahoo",
+                      tracker_symbol: "",
                       shares: "",
                       cost_basis: "",
                       acquisition_fee_value: "",
@@ -4750,6 +4918,8 @@ const computeAnnualizedReturnBetween = (
           </div>
           {holdings.length === 0 ? (
             <p className="empty">Add your first holding to start tracking.</p>
+          ) : filteredHoldings.length === 0 ? (
+            <p className="empty">No holdings for the selected account.</p>
           ) : (
             <div className="table">
               <div className="table-head">
@@ -4784,18 +4954,13 @@ const computeAnnualizedReturnBetween = (
                 <button
                   type="button"
                   className="table-sort"
-                  title="Acquisition date for the holding."
-                  onClick={() => handleSort("acquired_at")}
+                  title="Number of shares held and acquisition date."
+                  onClick={() =>
+                    handleSort(sortField === "shares" ? "acquired_at" : "shares")
+                  }
                 >
-                  Acquisition {renderSortIcon("acquired_at")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Number of shares held."
-                  onClick={() => handleSort("shares")}
-                >
-                  Shares {renderSortIcon("shares")}
+                  Shares / Acquisition{" "}
+                  {renderSortIcon(sortField === "acquired_at" ? "acquired_at" : "shares")}
                 </button>
                 <button
                   type="button"
@@ -4829,6 +4994,7 @@ const computeAnnualizedReturnBetween = (
                 >
                   P/L {renderSortIcon("pl")}
                 </button>
+                <span>Yahoo Targets</span>
                 <span>Actions</span>
               </div>
               <div className="table-body">
@@ -4918,6 +5084,27 @@ const computeAnnualizedReturnBetween = (
                       : gainClassValue >= 0
                         ? "positive"
                         : "negative";
+                  const yahooTargetLow = holding.yahoo_target_low;
+                  const yahooTargetMean = holding.yahoo_target_mean;
+                  const yahooTargetHigh = holding.yahoo_target_high;
+                  const yahooTargetMeanDisplay = formatMoney(yahooTargetMean, holding.currency);
+                  const yahooTargetLowDisplay = formatMoney(yahooTargetLow, holding.currency);
+                  const yahooTargetHighDisplay = formatMoney(yahooTargetHigh, holding.currency);
+                  const yahooTargetParsedDisplay = formatDate(holding.yahoo_target_parsed_at);
+                  const yahooTargetDeltaPct =
+                    yahooTargetMean !== null &&
+                    yahooTargetMean !== undefined &&
+                    lastPrice !== null &&
+                    lastPrice !== undefined &&
+                    lastPrice > 0
+                      ? (yahooTargetMean - lastPrice) / lastPrice
+                      : null;
+                  const yahooTargetDeltaClass =
+                    yahooTargetDeltaPct === null || yahooTargetDeltaPct === undefined
+                      ? ""
+                      : yahooTargetDeltaPct >= 0
+                        ? "positive"
+                        : "negative";
                   return (
                     <div className="table-row" key={holding.id}>
                       <span className="table-toggle" data-label="Charts">
@@ -4952,10 +5139,12 @@ const computeAnnualizedReturnBetween = (
                           <small>{holding.account.account_type}</small>
                         )}
                       </span>
-                      <span data-label="Acquisition">
-                        {holding.acquired_at ? formatDate(holding.acquired_at) : "—"}
+                      <span data-label="Shares / Acquisition">
+                        <span className="cost-values">{holding.shares.toFixed(2)}</span>
+                        <small>
+                          {holding.acquired_at ? formatDate(holding.acquired_at) : "—"}
+                        </small>
                       </span>
-                      <span data-label="Shares">{holding.shares.toFixed(2)}</span>
                       <span data-label="Cost / Total">
                       <span className="cost-values">
                         {costPerSharePrimary}
@@ -4993,6 +5182,23 @@ const computeAnnualizedReturnBetween = (
                         {annualized !== null && (
                           <small>Ann.: {formatPercentSigned(annualized)}</small>
                         )}
+                      </span>
+                      <span data-label="Yahoo Targets">
+                        <span className="cost-values">
+                          {yahooTargetMeanDisplay}
+                          {yahooTargetDeltaPct !== null && yahooTargetDeltaPct !== undefined ? (
+                            <small className={yahooTargetDeltaClass}>
+                              {" "}
+                              ({formatPercentSigned(yahooTargetDeltaPct)})
+                            </small>
+                          ) : (
+                            <small> vs last —</small>
+                          )}
+                        </span>
+                        <small>
+                          ( {yahooTargetLowDisplay} / {yahooTargetHighDisplay} )
+                        </small>
+                        <small>{yahooTargetParsedDisplay}</small>
                       </span>
                       <span className="holding-actions" data-label="Actions">
                         <button
@@ -5389,6 +5595,43 @@ const computeAnnualizedReturnBetween = (
                       : symbolSearchStatus.message || ""}
                   </small>
                 </label>
+                <label>
+                  Price tracker
+                  <select
+                    value={holdingForm.price_tracker}
+                    onChange={(e) =>
+                      setHoldingForm((prev) => ({
+                        ...prev,
+                        price_tracker: e.target.value,
+                        tracker_symbol: e.target.value === "boursorama" ? prev.tracker_symbol : "",
+                      }))
+                    }
+                  >
+                    <option value="yahoo">Yahoo Finance</option>
+                    <option value="boursorama">Boursorama</option>
+                  </select>
+                  <small className="muted">
+                    Use Boursorama for shares missing on Yahoo Finance.
+                  </small>
+                </label>
+                {holdingForm.price_tracker === "boursorama" && (
+                  <label>
+                    Boursorama symbol
+                    <input
+                      placeholder="1rASHELL"
+                      value={holdingForm.tracker_symbol}
+                      onChange={(e) =>
+                        setHoldingForm((prev) => ({
+                          ...prev,
+                          tracker_symbol: e.target.value,
+                        }))
+                      }
+                    />
+                    <small className="muted">
+                      Find the symbol in the Boursorama chart URL (symbol=...).
+                    </small>
+                  </label>
+                )}
                 
                 <label>
                   ISIN (optional)
@@ -6922,6 +7165,8 @@ const computeAnnualizedReturnBetween = (
             ? ` (${holdingAccount.account_type})`
             : "";
           const canAdjustCash = Boolean(holdingAccount);
+          const trackerLabel =
+            holding.price_tracker === "boursorama" ? "Boursorama" : "Yahoo Finance";
           return (
             <div className="symbol-modal-backdrop" onClick={closeHoldingActions}>
               <div
@@ -6953,6 +7198,16 @@ const computeAnnualizedReturnBetween = (
                       Symbol
                       <strong>{holding.symbol || "—"}</strong>
                     </div>
+                    <div className="holding-detail">
+                      Price tracker
+                      <strong>{trackerLabel}</strong>
+                    </div>
+                    {holding.price_tracker === "boursorama" && (
+                      <div className="holding-detail">
+                        Tracker symbol
+                        <strong>{holding.tracker_symbol || "—"}</strong>
+                      </div>
+                    )}
                     <div className="holding-detail">
                       ISIN
                       <strong>{holding.isin || "—"}</strong>

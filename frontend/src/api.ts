@@ -4,6 +4,12 @@ export interface HoldingStats {
   id: number;
   account_id?: number | null;
   symbol: string;
+  price_tracker?: "yahoo" | "boursorama";
+  tracker_symbol?: string | null;
+  yahoo_target_low?: number | null;
+  yahoo_target_mean?: number | null;
+  yahoo_target_high?: number | null;
+  yahoo_target_parsed_at?: string | null;
   shares: number;
   cost_basis: number;
   acquisition_fee_value?: number | null;
@@ -146,6 +152,28 @@ export interface Cac40AnalysisResponse {
   items: Cac40Item[];
 }
 
+export interface AnalystForecastItem {
+  symbol: string;
+  name?: string | null;
+  currency?: string | null;
+  price?: number | null;
+  target_low_price?: number | null;
+  target_mean_price?: number | null;
+  target_high_price?: number | null;
+  analyst_count?: number | null;
+  recommendation_mean?: number | null;
+  recommendation_key?: string | null;
+  upside_pct?: number | null;
+}
+
+export interface AnalystForecastResponse {
+  universe: string;
+  updated_at: string;
+  total_symbols: number;
+  with_forecast: number;
+  items: AnalystForecastItem[];
+}
+
 const AUTH_TOKEN_KEY = "followstocks_token";
 
 const api = axios.create({
@@ -188,6 +216,12 @@ export async function fetchCurrentUser() {
 
 export async function fetchCac40Analysis(metric: Cac40Metric) {
   return api.get<Cac40AnalysisResponse>("/analysis/cac40", { params: { metric } });
+}
+
+export async function fetchBsf120Analysis(includeMissing = false) {
+  return api.get<AnalystForecastResponse>("/analysis/bsf120", {
+    params: { include_missing: includeMissing },
+  });
 }
 
 export async function fetchPortfolio() {
@@ -247,6 +281,8 @@ export async function importBackupJson(file: File) {
 export async function createHolding(payload: {
   account_id?: number;
   symbol: string;
+  price_tracker?: "yahoo" | "boursorama";
+  tracker_symbol?: string;
   shares: number;
   cost_basis: number;
   acquisition_fee_value?: number;
@@ -357,6 +393,8 @@ export async function updateHolding(
     sector?: string;
     industry?: string;
     asset_type?: string;
+    price_tracker?: "yahoo" | "boursorama";
+    tracker_symbol?: string;
     symbol?: string;
     isin?: string;
     mic?: string;
@@ -395,6 +433,14 @@ export async function searchInstruments(query: string) {
 
 export async function fetchFxRate(base: string, quote: string) {
   return api.get("/fx", { params: { base, quote } });
+}
+
+export async function runYahooTargetsAgent() {
+  return api.post("/agents/yahoo-targets");
+}
+
+export async function refreshHoldingsPrices() {
+  return api.post("/holdings/refresh");
 }
 
 export default api;

@@ -75,6 +75,30 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    to: "/analysis/bsf120",
+    label: "BSF120",
+    icon: (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M4 19h16M5 16l4-5 3 3 5-7"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M15 7h2.5V9.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
+  },
 ];
 
 function FloatingSidebar() {

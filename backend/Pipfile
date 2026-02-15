@@ -4,21 +4,24 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-fastapi = "==0.128.0"
-sqlalchemy = "==2.0.45"
+fastapi = "==0.129.0"
+sqlalchemy = "==2.0.46"
 pydantic = "==2.12.5"
-httpx = "==0.27.0"
-yfinance = "==0.2.66"
+httpx = "==0.28.1"
+yfinance = "==1.1.0"
 uvicorn = "==0.40.0"
 python-jose = {extras = ["cryptography"], version = "==3.5.0"}
 passlib = {extras = ["bcrypt"], version = "==1.7.4"}
-python-multipart = "==0.0.21"
-langchain ="*"
-openai = "2.14.0"
-langgraph = "*"
-langgraph-checkpoint-sqlite = "*"
-langchain-community = "*"
-langchain-openai = "1.1.6"
+python-multipart = "==0.0.22"
+openai = "2.21.0"
+langgraph = "1.0.8"
+langgraph-checkpoint-sqlite = "3.0.3"
+langchain-community = "0.4.1"
+google-search-results = "2.4.2"
+lxml = "6.0.2"
+langchain = "1.2.10"
+langchain-openai = "1.1.9"
+playwright = "1.58.0"
 
 [dev-packages]
 

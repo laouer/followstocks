@@ -198,6 +198,14 @@ def get_holding_by_symbol_account(
 
 def create_holding(db: Session, user_id: int, data: schemas.HoldingCreate) -> models.Holding:
     existing = get_holding_by_symbol_account(db, user_id, data.account_id, data.symbol)
+    incoming_tracker = (data.price_tracker or "yahoo").lower()
+    incoming_tracker_symbol = data.tracker_symbol
+    if existing and "price_tracker" not in data.model_fields_set:
+        incoming_tracker = (existing.price_tracker or "yahoo").lower()
+    if incoming_tracker == "boursorama":
+        if existing and not incoming_tracker_symbol:
+            incoming_tracker_symbol = existing.tracker_symbol
+        incoming_tracker_symbol = incoming_tracker_symbol or data.symbol
     fee_value = data.acquisition_fee_value or 0
     buy_cost_total = data.shares * data.cost_basis + fee_value
     buy_cost_basis = buy_cost_total / data.shares
@@ -206,6 +214,19 @@ def create_holding(db: Session, user_id: int, data: schemas.HoldingCreate) -> mo
         buy_fx_rate = 1.0
 
     if existing:
+        existing_tracker = (existing.price_tracker or "yahoo").lower()
+        if existing_tracker != incoming_tracker:
+            raise ValueError(
+                "Holding already exists with a different price tracker. Edit it to change tracker."
+            )
+        if incoming_tracker == "boursorama":
+            existing_symbol = existing.tracker_symbol
+            if existing_symbol and incoming_tracker_symbol and existing_symbol != incoming_tracker_symbol:
+                raise ValueError(
+                    "Holding already exists with a different tracker symbol. Edit it to change symbol."
+                )
+            if not existing_symbol and incoming_tracker_symbol:
+                existing.tracker_symbol = incoming_tracker_symbol
         if existing.currency.upper() != data.currency.upper():
             raise ValueError("Currency mismatch for existing holding")
         existing_total_cost = (
@@ -241,6 +262,8 @@ def create_holding(db: Session, user_id: int, data: schemas.HoldingCreate) -> mo
             existing.name = data.name
         if not existing.href:
             existing.href = data.href
+        if not existing.price_tracker:
+            existing.price_tracker = incoming_tracker
         existing.updated_at = datetime.utcnow()
         db.add(existing)
         db.commit()
@@ -251,6 +274,8 @@ def create_holding(db: Session, user_id: int, data: schemas.HoldingCreate) -> mo
         user_id=user_id,
         account_id=data.account_id,
         symbol=data.symbol.upper(),
+        price_tracker=incoming_tracker,
+        tracker_symbol=incoming_tracker_symbol if incoming_tracker == "boursorama" else None,
         shares=data.shares,
         cost_basis=buy_cost_basis,
         acquisition_fee_value=0.0,
@@ -303,6 +328,10 @@ def update_holding(db: Session, holding: models.Holding, data: schemas.HoldingUp
         updates["isin"] = updates["isin"].upper()
     if "mic" in updates and updates["mic"]:
         updates["mic"] = updates["mic"].upper()
+    if "price_tracker" in updates and updates["price_tracker"]:
+        updates["price_tracker"] = str(updates["price_tracker"]).lower()
+    if "tracker_symbol" in updates:
+        updates["tracker_symbol"] = updates["tracker_symbol"] or None
     if "fx_rate" in updates and updates["fx_rate"] is None:
         updates.pop("fx_rate")
     if "href" in updates:
@@ -365,6 +394,8 @@ def build_holding_stats(db: Session, holding: models.Holding) -> schemas.Holding
         sector=holding.sector,
         industry=holding.industry,
         asset_type=holding.asset_type,
+        price_tracker=getattr(holding, "price_tracker", None) or "yahoo",
+        tracker_symbol=getattr(holding, "tracker_symbol", None),
         account=holding.account,
         isin=holding.isin,
         acquired_at=holding.acquired_at,
@@ -373,6 +404,10 @@ def build_holding_stats(db: Session, holding: models.Holding) -> schemas.Holding
         href=holding.href,
         created_at=holding.created_at,
         updated_at=holding.updated_at,
+        yahoo_target_low=getattr(holding, "yahoo_target_low", None),
+        yahoo_target_mean=getattr(holding, "yahoo_target_mean", None),
+        yahoo_target_high=getattr(holding, "yahoo_target_high", None),
+        yahoo_target_parsed_at=getattr(holding, "yahoo_target_parsed_at", None),
         last_price=last_price,
         last_snapshot_at=holding.last_snapshot_at,
         market_value=market_value,

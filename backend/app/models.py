@@ -55,6 +55,12 @@ class Holding(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
     symbol = Column(String, index=True, nullable=False)
+    price_tracker = Column(String, default="yahoo", nullable=False)
+    tracker_symbol = Column(String, nullable=True)
+    yahoo_target_low = Column(Float, nullable=True)
+    yahoo_target_mean = Column(Float, nullable=True)
+    yahoo_target_high = Column(Float, nullable=True)
+    yahoo_target_parsed_at = Column(DateTime, nullable=True)
     shares = Column(Float, nullable=False)
     cost_basis = Column(Float, nullable=False)  # per share
     acquisition_fee_value = Column(Float, default=0.0, nullable=False)
