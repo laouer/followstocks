@@ -4901,26 +4901,26 @@ const computeAnnualizedReturnBetween = (
                 <button
                   type="button"
                   className="table-sort"
-                  title="Cost per share and total cost paid (incl. fee)."
-                  onClick={() => handleSort("cost")}
-                >
-                  Cost / Total {renderSortIcon("cost")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Latest price per share and current market value."
+                  title="Current market value and latest price."
                   onClick={() => handleSort("value")}
                 >
-                  Last / Value {renderSortIcon("value")}
+                  Value / Last {renderSortIcon("value")}
                 </button>
                 <button
                   type="button"
                   className="table-sort"
-                  title="Profit/loss in currency and percent (annualized when available)."
+                  title="Profit/loss in percent and amount."
                   onClick={() => handleSort("pl")}
                 >
                   P/L {renderSortIcon("pl")}
+                </button>
+                <button
+                  type="button"
+                  className="table-sort"
+                  title="Cost per share, number of shares, total cost, and fees."
+                  onClick={() => handleSort("cost")}
+                >
+                  Cost Details {renderSortIcon("cost")}
                 </button>
                 <span>Actions</span>
               </div>
@@ -5012,7 +5012,7 @@ const computeAnnualizedReturnBetween = (
                         ? "positive"
                         : "negative";
                   return (
-                    <div className="table-row" key={holding.id}>
+                    <div className="table-row position-row" key={holding.id}>
                       <span className="instrument-cell" data-label="Instrument">
                         <div className="instrument-name-row">
                           {instrumentHref ? (
@@ -5028,45 +5028,47 @@ const computeAnnualizedReturnBetween = (
                             <span className="muted">{instrumentName}</span>
                           )}
                         </div>
+                        <small>
+                          {holding.symbol || "—"}
+                          {holding.asset_type ? ` · ${holding.asset_type}` : ""}
+                          {holding.sector ? ` · ${holding.sector}` : ""}
+                        </small>
                       </span>
-                      <span data-label="Cost / Total">
-                      <span className="cost-values">
-                        {costPerSharePrimary}
-                        <small> (# {holding.shares.toFixed(2)})</small>
-                        {costPerShareSecondary && <small> ({costPerShareSecondary})</small>}
+                      <span className="position-value" data-label="Value / Last">
+                        <span className="position-value-primary">
+                          {valueDisplay.primary}
+                          {valueDisplay.secondary && <small> ({valueDisplay.secondary})</small>}
                         </span>
-                      <span className="total-cost">
-                          {totalCostPrimary}
-                        {totalCostSecondary && <small> ({totalCostSecondary})</small>}
-                        {feeValue > 0 && (
-                          <small>
-                            {" "}
-                            <br />
-                            Fee: {feePrimary}
-                            {feeSecondary ? ` (${feeSecondary})` : ""}
-                          </small>
-                        )}
-                        </span>
-
-                      </span>
-                      <span data-label="Last / Value">
-                        <span className="cost-values">
-                          {lastPriceDisplay.primary}
+                        <span className="position-value-last">
+                          Last {lastPriceDisplay.primary}
                           {lastPriceDisplay.secondary && (
                             <small> ({lastPriceDisplay.secondary})</small>
                           )}
                         </span>
-                        <span className="total-cost">
-                          {valueDisplay.primary}
-                          {valueDisplay.secondary && <small> ({valueDisplay.secondary})</small>}
-                        </span>
                       </span>
-                      <span className="pl-cell" data-label="P/L">
-                        <span className={`cost-values pl-percent ${gainClass}`.trim()}>
+                      <span className="pl-cell position-pl" data-label="P/L">
+                        <span className={`pl-percent ${gainClass}`.trim()}>
                           {formatPercentSigned(gainPct)}
                         </span>
-                        {gainDisplayPrimary}
+                        <span className={`pl-amount ${gainClass}`.trim()}>{gainDisplayPrimary}</span>
                         {gainDisplaySecondary && <small>{gainDisplaySecondary}</small>}
+                      </span>
+                      <span className="position-details" data-label="Cost Details">
+                        <span className="position-cost-primary">
+                          {totalCostPrimary}
+                          {totalCostSecondary && <small> ({totalCostSecondary})</small>}
+                        </span>
+                        <span className="position-cost-share">
+                          {costPerSharePrimary}
+                          <small> (# {holding.shares.toFixed(2)})</small>
+                          {costPerShareSecondary && <small> ({costPerShareSecondary})</small>}
+                        </span>
+                        {feeValue > 0 && (
+                          <span className="position-cost-fee">
+                            + {feePrimary}
+                            {feeSecondary && <small> ({feeSecondary})</small>}
+                          </span>
+                        )}
                       </span>
                       <span className="holding-actions" data-label="Actions">
                         <button
