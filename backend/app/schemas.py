@@ -598,6 +598,41 @@ class BackupCashTransaction(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BackupPlacement(BaseModel):
+    id: int
+    account_id: Optional[int] = None
+    name: str
+    placement_type: Optional[str] = None
+    sector: Optional[str] = None
+    industry: Optional[str] = None
+    currency: CurrencyCode = "EUR"
+    initial_value: Optional[float] = None
+    initial_recorded_at: Optional[datetime] = None
+    total_contributions: Optional[float] = None
+    total_withdrawals: Optional[float] = None
+    total_interests: Optional[float] = None
+    total_fees: Optional[float] = None
+    current_value: Optional[float] = None
+    last_snapshot_at: Optional[datetime] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BackupPlacementSnapshot(BaseModel):
+    id: int
+    placement_id: int
+    entry_kind: PlacementEntryKind
+    value: float
+    recorded_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class BackupPayload(BaseModel):
     version: int = 1
     exported_at: datetime
@@ -605,6 +640,8 @@ class BackupPayload(BaseModel):
     holdings: List[BackupHolding]
     transactions: List[BackupTransaction]
     cash_transactions: List[BackupCashTransaction]
+    placements: List[BackupPlacement] = Field(default_factory=list)
+    placement_snapshots: List[BackupPlacementSnapshot] = Field(default_factory=list)
 
 
 class BackupImportResult(BaseModel):
@@ -612,6 +649,8 @@ class BackupImportResult(BaseModel):
     holdings: int
     transactions: int
     cash_transactions: int
+    placements: int = 0
+    placement_snapshots: int = 0
 
 
 class Cac40Item(BaseModel):

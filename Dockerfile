@@ -3,6 +3,8 @@
 # ---------- Frontend build ----------
 FROM node:18-slim AS frontend-builder
 WORKDIR /app/frontend
+ARG VITE_API_BASE=http://localhost:8000
+ENV VITE_API_BASE=${VITE_API_BASE}
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
@@ -49,8 +51,10 @@ COPY backend/ /app/backend/
 
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
+COPY docker/start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 EXPOSE 8000 4173
 
 # Serve frontend statically on 4173 and backend API on 8000
-CMD bash -c "python -m http.server 4173 --directory /app/frontend/dist & python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+CMD ["/app/start.sh"]

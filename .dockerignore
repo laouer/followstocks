@@ -24,3 +24,7 @@ backend/data.db-journal
 npm-debug.log*
 pyenv-compat-check.sh
 .python-version
+data.db
+chatbot.db
+ios/
+scripts/

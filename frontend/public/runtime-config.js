@@ -1,0 +1,1 @@
+window.__FOLLOWSTOCKS_CONFIG__ = window.__FOLLOWSTOCKS_CONFIG__ || {};

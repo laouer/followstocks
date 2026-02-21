@@ -23,6 +23,34 @@ from sqlalchemy.orm import Session
 from . import auth, crud, models, schemas
 from .database import Base, SessionLocal, engine, get_session, db_session, ensure_holdings_columns
 from .chatbot.main import ChatBot
+from .core.config import (
+    AUTO_REFRESH_SECONDS,
+    AUTO_REFRESH_ENABLED,
+    CAC40_CACHE_TTL_SECONDS,
+    SBF120_CACHE_TTL_SECONDS,
+    CORS_ALLOW_ORIGINS,
+    CORS_ALLOW_ALL_ORIGINS,
+    PRICE_TRACKER_YAHOO,
+    PRICE_TRACKER_BOURSORAMA,
+    PRICE_TRACKERS,
+    BOURSORAMA_QUOTE_URL,
+    YFINANCE_UNREACHABLE_MESSAGE,
+    CAC40_TICKERS,
+    CAC40_METRICS,
+    SBF120_EXTRA_TICKERS,
+)
+from .core.cache import (
+    set_yfinance_error,
+    set_yfinance_ok,
+    get_yfinance_status,
+    get_cac40_cache,
+    get_sbf120_cache,
+    get_cac40_cache_lock,
+    get_sbf120_cache_lock,
+)
+from .utils.price_trackers import normalize_price_tracker, resolve_tracker_symbol
+from .utils.market_data import safe_float, safe_int
+from .utils.ticker_utils import parse_ticker_list, build_sbf120_tickers, normalize_dividend_yield
 
 log = logging.getLogger("followstocks")
 logging.basicConfig(level=logging.INFO)
@@ -32,188 +60,14 @@ chatbot = ChatBot(verbose=False)
 Base.metadata.create_all(bind=engine)
 ensure_holdings_columns()
 
-
-AUTO_REFRESH_SECONDS = int(os.getenv("AUTO_REFRESH_SECONDS", "300"))
-AUTO_REFRESH_ENABLED = os.getenv("AUTO_REFRESH_ENABLED", "true").lower() not in {"0", "false", "no"}
+# Global variables
 _refresh_task: asyncio.Task | None = None
-CAC40_CACHE_TTL_SECONDS = int(os.getenv("CAC40_CACHE_TTL_SECONDS", "1800"))
-SBF120_CACHE_TTL_SECONDS = int(os.getenv("SBF120_CACHE_TTL_SECONDS", "1800"))
 
-CAC40_TICKERS = [
-    {"symbol": "AC.PA", "name": "Accor"},
-    {"symbol": "AI.PA", "name": "Air Liquide"},
-    {"symbol": "AIR.PA", "name": "Airbus"},
-    {"symbol": "ALO.PA", "name": "Alstom"},
-    {"symbol": "MT.AS", "name": "ArcelorMittal"},
-    {"symbol": "CS.PA", "name": "AXA"},
-    {"symbol": "BNP.PA", "name": "BNP Paribas"},
-    {"symbol": "EN.PA", "name": "Bouygues"},
-    {"symbol": "CAP.PA", "name": "Capgemini"},
-    {"symbol": "CA.PA", "name": "Carrefour"},
-    {"symbol": "ACA.PA", "name": "Credit Agricole"},
-    {"symbol": "BN.PA", "name": "Danone"},
-    {"symbol": "DSY.PA", "name": "Dassault Systemes"},
-    {"symbol": "EDEN.PA", "name": "Edenred"},
-    {"symbol": "ENGI.PA", "name": "Engie"},
-    {"symbol": "EL.PA", "name": "EssilorLuxottica"},
-    {"symbol": "RMS.PA", "name": "Hermes"},
-    {"symbol": "KER.PA", "name": "Kering"},
-    {"symbol": "OR.PA", "name": "L'Oreal"},
-    {"symbol": "LR.PA", "name": "Legrand"},
-    {"symbol": "MC.PA", "name": "LVMH"},
-    {"symbol": "ML.PA", "name": "Michelin"},
-    {"symbol": "ORA.PA", "name": "Orange"},
-    {"symbol": "RI.PA", "name": "Pernod Ricard"},
-    {"symbol": "PUB.PA", "name": "Publicis"},
-    {"symbol": "RNO.PA", "name": "Renault"},
-    {"symbol": "SAF.PA", "name": "Safran"},
-    {"symbol": "SGO.PA", "name": "Saint-Gobain"},
-    {"symbol": "SAN.PA", "name": "Sanofi"},
-    {"symbol": "SU.PA", "name": "Schneider Electric"},
-    {"symbol": "GLE.PA", "name": "Societe Generale"},
-    {"symbol": "STLAP.PA", "name": "Stellantis"},
-    {"symbol": "STM.PA", "name": "STMicroelectronics"},
-    {"symbol": "TTE.PA", "name": "TotalEnergies"},
-    {"symbol": "URW.AS", "name": "Unibail-Rodamco-Westfield"},
-    {"symbol": "VIE.PA", "name": "Veolia"},
-    {"symbol": "DG.PA", "name": "Vinci"},
-    {"symbol": "VIV.PA", "name": "Vivendi"},
-    {"symbol": "WLN.PA", "name": "Worldline"},
-    {"symbol": "HO.PA", "name": "Thales"},
-]
-
-CAC40_METRICS = {
-    "analyst_discount": "Analyst discount",
-    "pe_discount": "P/E discount",
-    "sector_pe_discount": "Sector P/E discount",
-    "dividend_yield": "Dividend yield",
-    "composite": "Composite score",
-}
-
-_cac40_cache: dict[str, Any] = {"timestamp": None, "items": None}
-_cac40_cache_lock = asyncio.Lock()
-
-SBF120_EXTRA_TICKERS = [
-    {"symbol": "ADP.PA", "name": "Aeroports de Paris"},
-    {"symbol": "AF.PA", "name": "Air France-KLM"},
-    {"symbol": "AKE.PA", "name": "Arkema"},
-    {"symbol": "ALD.PA", "name": "ALD"},
-    {"symbol": "ATO.PA", "name": "Atos"},
-    {"symbol": "BEN.PA", "name": "Beneteau"},
-    {"symbol": "BIM.PA", "name": "bioMerieux"},
-    {"symbol": "BOL.PA", "name": "Bollore"},
-    {"symbol": "BVI.PA", "name": "Bureau Veritas"},
-    {"symbol": "CARM.PA", "name": "Carmila"},
-    {"symbol": "CDA.PA", "name": "Compagnie des Alpes"},
-    {"symbol": "COFA.PA", "name": "Coface"},
-    {"symbol": "COV.PA", "name": "Covivio"},
-    {"symbol": "DBG.PA", "name": "Derichebourg"},
-    {"symbol": "DEC.PA", "name": "JCDecaux"},
-    {"symbol": "EDF.PA", "name": "EDF"},
-    {"symbol": "ELIOR.PA", "name": "Elior"},
-    {"symbol": "ELIS.PA", "name": "Elis"},
-    {"symbol": "ENX.PA", "name": "Euronext"},
-    {"symbol": "ERA.PA", "name": "Eramet"},
-    {"symbol": "ERF.PA", "name": "Eurofins Scientific"},
-    {"symbol": "ETL.PA", "name": "Eutelsat"},
-    {"symbol": "EXHO.PA", "name": "Sodexo"},
-    {"symbol": "FDJ.PA", "name": "FDJ United"},
-    {"symbol": "FGR.PA", "name": "Eiffage"},
-    {"symbol": "FR.PA", "name": "Valeo"},
-    {"symbol": "GFC.PA", "name": "Gecina"},
-    {"symbol": "GET.PA", "name": "Getlink"},
-    {"symbol": "GTT.PA", "name": "Gaztransport & Technigaz"},
-    {"symbol": "IPN.PA", "name": "Ipsen"},
-    {"symbol": "LI.PA", "name": "Klepierre"},
-    {"symbol": "MAU.PA", "name": "Maurel et Prom"},
-    {"symbol": "MRN.PA", "name": "Mersen"},
-    {"symbol": "NEX.PA", "name": "Nexans"},
-    {"symbol": "NK.PA", "name": "Imerys"},
-    {"symbol": "POM.PA", "name": "OPmobility"},
-    {"symbol": "RCO.PA", "name": "Remy Cointreau"},
-    {"symbol": "RF.PA", "name": "Eurazeo"},
-    {"symbol": "RUI.PA", "name": "Rubis"},
-    {"symbol": "RXL.PA", "name": "Rexel"},
-    {"symbol": "SCR.PA", "name": "SCOR"},
-    {"symbol": "SESL.PA", "name": "SES-imagotag"},
-    {"symbol": "SK.PA", "name": "SEB"},
-    {"symbol": "SMCP.PA", "name": "SMCP"},
-    {"symbol": "SOI.PA", "name": "Soitec"},
-    {"symbol": "SOP.PA", "name": "Sopra Steria"},
-    {"symbol": "SPIE.PA", "name": "SPIE"},
-    {"symbol": "TEP.PA", "name": "Teleperformance"},
-    {"symbol": "TFI.PA", "name": "TF1"},
-    {"symbol": "TKTT.PA", "name": "Tarkett"},
-    {"symbol": "TRI.PA", "name": "Trigano"},
-    {"symbol": "UBI.PA", "name": "Ubisoft"},
-    {"symbol": "VCT.PA", "name": "Vicat"},
-    {"symbol": "VIRP.PA", "name": "Virbac"},
-    {"symbol": "VK.PA", "name": "Vallourec"},
-    {"symbol": "VLA.PA", "name": "Valneva"},
-]
-
-_sbf120_cache: dict[str, Any] = {"timestamp": None, "items": None}
-_sbf120_cache_lock = asyncio.Lock()
-_yfinance_status_lock = Lock()
-_yfinance_status: dict[str, Any] = {
-    "ok": True,
-    "message": None,
-    "last_error_at": None,
-}
-YFINANCE_UNREACHABLE_MESSAGE = (
-    "Last prices are not updated because Yahoo Finance is unreachable "
-    "(connection lost or blocked)."
-)
-PRICE_TRACKER_YAHOO = "yahoo"
-PRICE_TRACKER_BOURSORAMA = "boursorama"
-PRICE_TRACKERS = {PRICE_TRACKER_YAHOO, PRICE_TRACKER_BOURSORAMA}
-BOURSORAMA_QUOTE_URL = "https://www.boursorama.com/bourse/action/graph/ws/UpdateCharts"
-
-
-def _set_yfinance_error(message: str) -> None:
-    now = datetime.utcnow()
-    with _yfinance_status_lock:
-        if _yfinance_status.get("ok") or _yfinance_status.get("message") != message:
-            _yfinance_status["last_error_at"] = now
-        _yfinance_status["ok"] = False
-        _yfinance_status["message"] = message
-
-
-def _set_yfinance_ok() -> None:
-    with _yfinance_status_lock:
-        _yfinance_status["ok"] = True
-        _yfinance_status["message"] = None
-        _yfinance_status["last_error_at"] = None
-
-
-def _get_yfinance_status() -> schemas.YahooFinanceStatus:
-    with _yfinance_status_lock:
-        return schemas.YahooFinanceStatus(
-            ok=bool(_yfinance_status.get("ok")),
-            message=_yfinance_status.get("message"),
-            last_error_at=_yfinance_status.get("last_error_at"),
-        )
-
-
-def _normalize_price_tracker(value: str | None) -> str:
-    tracker = (value or PRICE_TRACKER_YAHOO).strip().lower()
-    if tracker == "yfinance":
-        tracker = PRICE_TRACKER_YAHOO
-    if tracker not in PRICE_TRACKERS:
-        tracker = PRICE_TRACKER_YAHOO
-    return tracker
-
-
-def _resolve_tracker_symbol(
-    holding: models.Holding,
-    tracker: str | None = None,
-) -> str | None:
-    tracker = _normalize_price_tracker(tracker or holding.price_tracker)
-    symbol = holding.tracker_symbol if tracker == PRICE_TRACKER_BOURSORAMA else holding.symbol
-    symbol = (symbol or "").strip()
-    if not symbol and tracker == PRICE_TRACKER_BOURSORAMA:
-        symbol = (holding.symbol or "").strip()
-    return symbol or None
+# Convenience references to cache objects (imported from core.cache)
+_cac40_cache = get_cac40_cache()
+_cac40_cache_lock = get_cac40_cache_lock()
+_sbf120_cache = get_sbf120_cache()
+_sbf120_cache_lock = get_sbf120_cache_lock()
 
 
 async def _fetch_yfinance_quote(symbol: str) -> dict:
@@ -230,16 +84,16 @@ async def _fetch_yfinance_quote(symbol: str) -> dict:
                     if hist is None or hist.empty:
                         hist = ticker.history(period="3mo", interval="1mo")
             if hist is None or hist.empty:
-                _set_yfinance_ok()
+                set_yfinance_ok()
                 return {"price": None, "timestamp": None, "source": "yfinance"}
             last_row = hist.tail(1)
             price = float(last_row["Close"].iloc[0])
             ts = last_row.index[-1].to_pydatetime().isoformat()
-            _set_yfinance_ok()
+            set_yfinance_ok()
             return {"price": price, "timestamp": ts, "source": "yfinance"}
         except Exception as exc:
             log.warning("yfinance quote failed for %s: %s", symbol, exc)
-            _set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
+            set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
             return {"price": None, "timestamp": None, "source": "yfinance"}
 
     return await asyncio.to_thread(_sync_fetch)
@@ -258,10 +112,10 @@ def _extract_boursorama_price(payload: Any) -> float | None:
     if isinstance(ticks, list) and ticks:
         last_tick = ticks[-1]
         if isinstance(last_tick, dict):
-            price = _safe_float(last_tick.get("c"))
+            price = safe_float(last_tick.get("c"))
             if price is not None:
                 return price
-    return _safe_float(latest.get("c"))
+    return safe_float(latest.get("c"))
 
 
 async def _fetch_boursorama_quote(symbol: str) -> dict:
@@ -291,7 +145,7 @@ async def _fetch_boursorama_quote(symbol: str) -> dict:
 
 
 async def _fetch_tracker_quote(tracker: str, symbol: str) -> dict:
-    tracker = _normalize_price_tracker(tracker)
+    tracker = normalize_price_tracker(tracker)
     if tracker == PRICE_TRACKER_BOURSORAMA:
         return await _fetch_boursorama_quote(symbol)
     return await _fetch_yfinance_quote(symbol)
@@ -309,14 +163,14 @@ async def _fetch_fx_rate(base: str, quote: str) -> float | None:
         try:
             hist = ticker.history(period="5d", interval="1d")
             if hist is None or hist.empty:
-                _set_yfinance_ok()
+                set_yfinance_ok()
                 return None
             last_row = hist.tail(1)
-            _set_yfinance_ok()
+            set_yfinance_ok()
             return float(last_row["Close"].iloc[0])
         except Exception as exc:
             log.warning("yfinance FX failed for %s: %s", symbol, exc)
-            _set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
+            set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
             return None
 
     return await asyncio.to_thread(_sync_fetch)
@@ -350,82 +204,12 @@ async def _search_yfinance(query: str) -> list[dict]:
             resp = await client.get(url, params={"q": query, "quotesCount": 10, "newsCount": 0})
             resp.raise_for_status()
             data = resp.json()
-            _set_yfinance_ok()
+            set_yfinance_ok()
             return data.get("quotes", []) or []
     except Exception as exc:  # noqa: BLE001
         log.warning("yfinance search failed for %s: %s", query, exc)
-        _set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
+        set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
         return []
-
-
-def _safe_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_ticker_list(raw: str | None) -> list[dict[str, str]]:
-    if not raw:
-        return []
-    entries: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for token in raw.split(","):
-        value = token.strip()
-        if not value:
-            continue
-        symbol = value
-        name = ""
-        if ":" in value:
-            symbol, name = value.split(":", 1)
-        symbol = symbol.strip().upper()
-        name = name.strip()
-        if not symbol or symbol in seen:
-            continue
-        seen.add(symbol)
-        entries.append({"symbol": symbol, "name": name or symbol})
-    return entries
-
-
-def _build_sbf120_tickers() -> list[dict[str, str]]:
-    configured = _parse_ticker_list(
-        os.getenv("SBF120_SYMBOLS") or os.getenv("BSF120_SYMBOLS")
-    )
-    if configured:
-        return configured
-    merged: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for entry in [*CAC40_TICKERS, *SBF120_EXTRA_TICKERS]:
-        symbol = entry["symbol"]
-        if symbol in seen:
-            continue
-        seen.add(symbol)
-        merged.append({"symbol": symbol, "name": entry.get("name") or symbol})
-    return merged
-
-
-def _normalize_dividend_yield(value: Any) -> float | None:
-    dividend_yield = _safe_float(value)
-    if dividend_yield is None:
-        return None
-    if dividend_yield < 0:
-        return None
-    if dividend_yield > 1:
-        return dividend_yield / 100
-    if dividend_yield > 0.2:
-        return dividend_yield / 100
-    return dividend_yield
 
 
 def _fetch_cac40_symbol(symbol: str, fallback_name: str | None) -> dict | None:
@@ -442,19 +226,19 @@ def _fetch_cac40_symbol(symbol: str, fallback_name: str | None) -> dict | None:
         or symbol
     )
     price = (
-        _safe_float(info.get("regularMarketPrice"))
-        or _safe_float(info.get("currentPrice"))
-        or _safe_float(info.get("previousClose"))
+        safe_float(info.get("regularMarketPrice"))
+        or safe_float(info.get("currentPrice"))
+        or safe_float(info.get("previousClose"))
     )
-    dividend_rate = _safe_float(info.get("trailingAnnualDividendRate"))
+    dividend_rate = safe_float(info.get("trailingAnnualDividendRate"))
     if dividend_rate is None:
-        dividend_rate = _safe_float(info.get("dividendRate"))
+        dividend_rate = safe_float(info.get("dividendRate"))
     computed_yield = (
         dividend_rate / price
         if dividend_rate is not None and price is not None and price > 0
         else None
     )
-    normalized_yield = _normalize_dividend_yield(
+    normalized_yield = normalize_dividend_yield(
         info.get("dividendYield") or info.get("trailingAnnualDividendYield")
     )
     return {
@@ -462,11 +246,11 @@ def _fetch_cac40_symbol(symbol: str, fallback_name: str | None) -> dict | None:
         "name": name,
         "currency": info.get("currency"),
         "price": price,
-        "target_mean_price": _safe_float(info.get("targetMeanPrice")),
-        "trailing_pe": _safe_float(info.get("trailingPE")),
-        "price_to_book": _safe_float(info.get("priceToBook")),
+        "target_mean_price": safe_float(info.get("targetMeanPrice")),
+        "trailing_pe": safe_float(info.get("trailingPE")),
+        "price_to_book": safe_float(info.get("priceToBook")),
         "dividend_yield": computed_yield if computed_yield is not None else normalized_yield,
-        "market_cap": _safe_float(info.get("marketCap")),
+        "market_cap": safe_float(info.get("marketCap")),
         "sector": info.get("sector"),
     }
 
@@ -494,11 +278,11 @@ def _fetch_sbf120_symbol(symbol: str, fallback_name: str | None) -> dict:
 
     name = info.get("longName") or info.get("shortName") or fallback_name or symbol
     price = (
-        _safe_float(info.get("regularMarketPrice"))
-        or _safe_float(info.get("currentPrice"))
-        or _safe_float(info.get("previousClose"))
+        safe_float(info.get("regularMarketPrice"))
+        or safe_float(info.get("currentPrice"))
+        or safe_float(info.get("previousClose"))
     )
-    target_mean = _safe_float(info.get("targetMeanPrice"))
+    target_mean = safe_float(info.get("targetMeanPrice"))
     upside_pct = (
         (target_mean - price) / price
         if price is not None and price > 0 and target_mean is not None
@@ -509,11 +293,11 @@ def _fetch_sbf120_symbol(symbol: str, fallback_name: str | None) -> dict:
         "name": name,
         "currency": info.get("currency"),
         "price": price,
-        "target_low_price": _safe_float(info.get("targetLowPrice")),
+        "target_low_price": safe_float(info.get("targetLowPrice")),
         "target_mean_price": target_mean,
-        "target_high_price": _safe_float(info.get("targetHighPrice")),
-        "analyst_count": _safe_int(info.get("numberOfAnalystOpinions")),
-        "recommendation_mean": _safe_float(info.get("recommendationMean")),
+        "target_high_price": safe_float(info.get("targetHighPrice")),
+        "analyst_count": safe_int(info.get("numberOfAnalystOpinions")),
+        "recommendation_mean": safe_float(info.get("recommendationMean")),
         "recommendation_key": info.get("recommendationKey"),
         "upside_pct": upside_pct,
     }
@@ -560,7 +344,7 @@ async def _load_sbf120_snapshot() -> tuple[list[dict], datetime]:
             cached_items = _sbf120_cache.get("items") or []
             return cached_items, cached_at
 
-        tickers = _build_sbf120_tickers()
+        tickers = build_sbf120_tickers()
         semaphore = asyncio.Semaphore(6)
 
         async def _runner(entry: dict[str, str]) -> dict:
@@ -706,8 +490,8 @@ def _group_holdings_by_tracker(
 ) -> dict[tuple[str, str], list[models.Holding]]:
     grouped: dict[tuple[str, str], list[models.Holding]] = {}
     for holding in holdings:
-        tracker = _normalize_price_tracker(getattr(holding, "price_tracker", None))
-        symbol = _resolve_tracker_symbol(holding, tracker)
+        tracker = normalize_price_tracker(getattr(holding, "price_tracker", None))
+        symbol = resolve_tracker_symbol(holding, tracker)
         if not symbol:
             continue
         grouped.setdefault((tracker, symbol), []).append(holding)
@@ -801,9 +585,9 @@ app = FastAPI(title="FollowStocks API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"] if CORS_ALLOW_ALL_ORIGINS else CORS_ALLOW_ORIGINS,
+    allow_credentials=not CORS_ALLOW_ALL_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -1411,6 +1195,17 @@ def export_backup(
         .filter(models.CashTransaction.user_id == current_user.id)
         .all()
     )
+    placements = (
+        db.query(models.Placement)
+        .filter(models.Placement.user_id == current_user.id)
+        .all()
+    )
+    placement_snapshots = (
+        db.query(models.PlacementSnapshot)
+        .join(models.Placement, models.Placement.id == models.PlacementSnapshot.placement_id)
+        .filter(models.Placement.user_id == current_user.id)
+        .all()
+    )
     payload = schemas.BackupPayload(
         exported_at=datetime.utcnow(),
         accounts=[schemas.BackupAccount.model_validate(account) for account in accounts],
@@ -1421,6 +1216,11 @@ def export_backup(
         cash_transactions=[
             schemas.BackupCashTransaction.model_validate(transaction)
             for transaction in cash_transactions
+        ],
+        placements=[schemas.BackupPlacement.model_validate(placement) for placement in placements],
+        placement_snapshots=[
+            schemas.BackupPlacementSnapshot.model_validate(snapshot)
+            for snapshot in placement_snapshots
         ],
     )
     filename = f"backup-{datetime.utcnow().strftime('%Y%m%d')}.json"
@@ -1461,10 +1261,33 @@ async def import_backup(
         for transaction in payload.cash_transactions
         if transaction.account_id not in account_ids
     )
+    missing_account_refs.update(
+        placement.account_id
+        for placement in payload.placements
+        if placement.account_id is not None and placement.account_id not in account_ids
+    )
     if missing_account_refs:
         missing = ", ".join(str(account_id) for account_id in sorted(missing_account_refs))
         raise HTTPException(status_code=400, detail=f"Missing accounts in backup: {missing}")
 
+    placement_ids = {placement.id for placement in payload.placements}
+    missing_placement_refs = {
+        snapshot.placement_id
+        for snapshot in payload.placement_snapshots
+        if snapshot.placement_id not in placement_ids
+    }
+    if missing_placement_refs:
+        missing = ", ".join(str(placement_id) for placement_id in sorted(missing_placement_refs))
+        raise HTTPException(status_code=400, detail=f"Missing placements in backup: {missing}")
+
+    db.query(models.PlacementSnapshot).filter(
+        models.PlacementSnapshot.placement_id.in_(
+            db.query(models.Placement.id).filter(models.Placement.user_id == current_user.id)
+        )
+    ).delete(synchronize_session=False)
+    db.query(models.Placement).filter(models.Placement.user_id == current_user.id).delete(
+        synchronize_session=False
+    )
     db.query(models.Holding).filter(models.Holding.user_id == current_user.id).delete(
         synchronize_session=False
     )
@@ -1571,6 +1394,58 @@ async def import_backup(
             )
         )
 
+    placement_id_map: dict[int, int] = {}
+    for placement in payload.placements:
+        account_id = None
+        if placement.account_id is not None:
+            account_id = account_id_map.get(placement.account_id)
+            if not account_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Account id {placement.account_id} missing for placement {placement.name}",
+                )
+        created = models.Placement(
+            user_id=current_user.id,
+            account_id=account_id,
+            name=placement.name,
+            placement_type=placement.placement_type,
+            sector=placement.sector,
+            industry=placement.industry,
+            currency=placement.currency,
+            initial_value=placement.initial_value,
+            initial_recorded_at=placement.initial_recorded_at,
+            total_contributions=placement.total_contributions,
+            total_withdrawals=placement.total_withdrawals,
+            total_interests=placement.total_interests,
+            total_fees=placement.total_fees,
+            current_value=placement.current_value,
+            last_snapshot_at=placement.last_snapshot_at,
+            notes=placement.notes,
+            created_at=placement.created_at,
+            updated_at=placement.updated_at,
+        )
+        db.add(created)
+        db.flush()
+        placement_id_map[placement.id] = created.id
+
+    for snapshot in payload.placement_snapshots:
+        placement_id = placement_id_map.get(snapshot.placement_id)
+        if not placement_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Placement id {snapshot.placement_id} missing for placement snapshot",
+            )
+        db.add(
+            models.PlacementSnapshot(
+                placement_id=placement_id,
+                entry_kind=snapshot.entry_kind,
+                value=snapshot.value,
+                recorded_at=snapshot.recorded_at,
+                created_at=snapshot.created_at,
+                updated_at=snapshot.updated_at,
+            )
+        )
+
     db.commit()
 
     return schemas.BackupImportResult(
@@ -1578,6 +1453,8 @@ async def import_backup(
         holdings=len(payload.holdings),
         transactions=len(payload.transactions),
         cash_transactions=len(payload.cash_transactions),
+        placements=len(payload.placements),
+        placement_snapshots=len(payload.placement_snapshots),
     )
 
 
@@ -1596,7 +1473,7 @@ def update_holding(
         if not account:
             raise HTTPException(status_code=400, detail="Account not found")
     if payload.price_tracker is not None or payload.tracker_symbol is not None:
-        next_tracker = _normalize_price_tracker(
+        next_tracker = normalize_price_tracker(
             payload.price_tracker or getattr(holding, "price_tracker", None)
         )
         next_symbol = (
@@ -1679,7 +1556,7 @@ def get_portfolio(
 ):
     try:
         response = crud.portfolio_summary(db, current_user.id)
-        response.yfinance_status = _get_yfinance_status()
+        response.yfinance_status = get_yfinance_status()
         return response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

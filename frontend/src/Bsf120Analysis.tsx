@@ -48,10 +48,14 @@ const recommendationLabel = (key?: string | null) => {
   return key.replaceAll("_", " ");
 };
 
+const RECO_TOOLTIP =
+  "Yahoo recommendation mean:\n1.0 = Strong Buy\n2.0 = Buy\n3.0 = Hold\n4.0 = Sell\n5.0 = Strong Sell\nLower is more bullish.";
+
 function Bsf120Analysis() {
   const [data, setData] = useState<AnalystForecastResponse | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [includeMissing, setIncludeMissing] = useState(false);
+  const [nameFilter, setNameFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("upside");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -71,9 +75,16 @@ function Bsf120Analysis() {
   }, [loadAnalysis]);
 
   const items = useMemo(() => data?.items ?? [], [data]);
+  const filteredItems = useMemo(() => {
+    const query = nameFilter.trim().toLowerCase();
+    if (!query) return items;
+    return items.filter((item) =>
+      `${item.name ?? ""} ${item.symbol ?? ""}`.toLowerCase().includes(query)
+    );
+  }, [items, nameFilter]);
 
   const sortedItems = useMemo(() => {
-    const list = [...items];
+    const list = [...filteredItems];
     const getValue = (item: AnalystForecastItem) => {
       switch (sortKey) {
         case "company":
@@ -114,7 +125,7 @@ function Bsf120Analysis() {
       return 0;
     });
     return list;
-  }, [items, sortDir, sortKey]);
+  }, [filteredItems, sortDir, sortKey]);
 
   const handleSort = (key: SortKey) => {
     setSortDir((prev) => (key === sortKey ? (prev === "asc" ? "desc" : "asc") : "desc"));
@@ -148,17 +159,28 @@ function Bsf120Analysis() {
           </div>
 
           <div className="analysis-controls">
-            <label>
-              Data
-              <span className="muted helper">
+            <div className="analysis-filters">
+              <label>
+                Data
+                <span className="muted helper">
+                  <input
+                    checked={includeMissing}
+                    onChange={(event) => setIncludeMissing(event.target.checked)}
+                    type="checkbox"
+                  />{" "}
+                  Include symbols without target mean
+                </span>
+              </label>
+              <label>
+                Search by name
                 <input
-                  checked={includeMissing}
-                  onChange={(event) => setIncludeMissing(event.target.checked)}
-                  type="checkbox"
-                />{" "}
-                Include symbols without target mean
-              </span>
-            </label>
+                  type="search"
+                  value={nameFilter}
+                  onChange={(event) => setNameFilter(event.target.value)}
+                  placeholder="Type a company or ticker"
+                />
+              </label>
+            </div>
             <div className="analysis-meta">
               <p className="muted helper">
                 {data
@@ -240,57 +262,61 @@ function Bsf120Analysis() {
               <button
                 type="button"
                 className="table-sort"
-                title="Yahoo recommendation mean (lower is more bullish)."
+                title={RECO_TOOLTIP}
                 onClick={() => handleSort("reco")}
               >
-                Reco {renderSortIcon("reco")}
+                Reco <span className="tooltip-hint">?</span> {renderSortIcon("reco")}
               </button>
             </div>
             <div className="table-body">
-              {sortedItems.map((item) => {
-                const currency = item.currency || "EUR";
-                const upsideClass =
-                  item.upside_pct === null || item.upside_pct === undefined
-                    ? ""
-                    : item.upside_pct >= 0
-                      ? "positive"
-                      : "negative";
-                return (
-                  <div className="table-row" key={item.symbol}>
-                    <span data-label="Company">
-                      <a
-                        className="analysis-link"
-                        href={`https://fr.finance.yahoo.com/quote/${item.symbol}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <span className="analysis-name">{item.name || item.symbol}</span>
-                      </a>
-                      <small className="analysis-symbol">{item.symbol}</small>
-                    </span>
-                    <span data-label="Price">{formatMoney(item.price, currency)}</span>
-                    <span data-label="Target low">
-                      {formatMoney(item.target_low_price, currency)}
-                    </span>
-                    <span data-label="Target mean">
-                      {formatMoney(item.target_mean_price, currency)}
-                    </span>
-                    <span data-label="Target high">
-                      {formatMoney(item.target_high_price, currency)}
-                    </span>
-                    <span data-label="Upside" className={upsideClass}>
-                      {formatPercent(item.upside_pct)}
-                    </span>
-                    <span data-label="Analysts">{formatNumber(item.analyst_count, 0)}</span>
-                    <span data-label="Reco">
-                      {formatNumber(item.recommendation_mean)}
-                      <small className="analysis-symbol">
-                        {recommendationLabel(item.recommendation_key)}
-                      </small>
-                    </span>
-                  </div>
-                );
-              })}
+              {sortedItems.length === 0 ? (
+                <p className="empty">No symbols match your search.</p>
+              ) : (
+                sortedItems.map((item) => {
+                  const currency = item.currency || "EUR";
+                  const upsideClass =
+                    item.upside_pct === null || item.upside_pct === undefined
+                      ? ""
+                      : item.upside_pct >= 0
+                        ? "positive"
+                        : "negative";
+                  return (
+                    <div className="table-row" key={item.symbol}>
+                      <span data-label="Company">
+                        <a
+                          className="analysis-link"
+                          href={`https://fr.finance.yahoo.com/quote/${item.symbol}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <span className="analysis-name">{item.name || item.symbol}</span>
+                        </a>
+                        <small className="analysis-symbol">{item.symbol}</small>
+                      </span>
+                      <span data-label="Price">{formatMoney(item.price, currency)}</span>
+                      <span data-label="Target low">
+                        {formatMoney(item.target_low_price, currency)}
+                      </span>
+                      <span data-label="Target mean">
+                        {formatMoney(item.target_mean_price, currency)}
+                      </span>
+                      <span data-label="Target high">
+                        {formatMoney(item.target_high_price, currency)}
+                      </span>
+                      <span data-label="Upside" className={upsideClass}>
+                        {formatPercent(item.upside_pct)}
+                      </span>
+                      <span data-label="Analysts">{formatNumber(item.analyst_count, 0)}</span>
+                      <span data-label="Reco">
+                        {formatNumber(item.recommendation_mean)}
+                        <small className="analysis-symbol">
+                          {recommendationLabel(item.recommendation_key)}
+                        </small>
+                      </span>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </section>

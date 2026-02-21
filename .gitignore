@@ -208,5 +208,8 @@ __marimo__/
 
 node_modules/
 .DS_Store
-data.db
+data.db*
+chatbot.db
 .python-version
+ios/
+scripts/

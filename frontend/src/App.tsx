@@ -353,8 +353,6 @@ function App() {
   const [allocationChartType, setAllocationChartType] = useState<"donut" | "bar">("donut");
   const [plChartType, setPlChartType] = useState<"donut" | "bar">("bar");
   const [chartGroupBy, setChartGroupBy] = useState<ChartGroupBy>("holding");
-  const [excludedHoldings, setExcludedHoldings] = useState<Set<number>>(new Set());
-  const [excludedPlacements, setExcludedPlacements] = useState<Set<number>>(new Set());
   const [accountForm, setAccountForm] = useState({
     name: "",
     account_type: "",
@@ -457,8 +455,6 @@ function App() {
   const yfinanceStatusRef = useRef<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [backupImportTarget, setBackupImportTarget] = useState<File | null>(null);
-  const includeAllRef = useRef<HTMLInputElement | null>(null);
-  const includeAllPlacementsRef = useRef<HTMLInputElement | null>(null);
   const tourOpenedHoldingModalRef = useRef(false);
   const tourOpenedAccountModalRef = useRef(false);
   const tourSteps: TourStep[] = [
@@ -629,30 +625,30 @@ function App() {
   }, [accounts, holdingForm.account_id, defaultAccountId]);
   const chartHoldings = useMemo(() => {
     if (holdingAccountFilter === "all") {
-      return holdings.filter((holding) => !excludedHoldings.has(holding.id));
+      return holdings;
     }
     const accountId = Number(holdingAccountFilter);
     if (!Number.isFinite(accountId)) {
-      return holdings.filter((holding) => !excludedHoldings.has(holding.id));
+      return holdings;
     }
     return holdings.filter((holding) => {
       const holdingAccountId = holding.account_id ?? holding.account?.id ?? null;
-      return holdingAccountId === accountId && !excludedHoldings.has(holding.id);
+      return holdingAccountId === accountId;
     });
-  }, [holdings, excludedHoldings, holdingAccountFilter]);
+  }, [holdings, holdingAccountFilter]);
   const chartPlacements = useMemo(() => {
     if (holdingAccountFilter === "all") {
-      return placements.filter((placement) => !excludedPlacements.has(placement.id));
+      return placements;
     }
     const accountId = Number(holdingAccountFilter);
     if (!Number.isFinite(accountId)) {
-      return placements.filter((placement) => !excludedPlacements.has(placement.id));
+      return placements;
     }
     return placements.filter((placement) => {
       const placementAccountId = placement.account_id ?? null;
-      return placementAccountId === accountId && !excludedPlacements.has(placement.id);
+      return placementAccountId === accountId;
     });
-  }, [placements, excludedPlacements, holdingAccountFilter]);
+  }, [placements, holdingAccountFilter]);
   const summary = portfolio?.summary;
   const totalCurrency = DISPLAY_CURRENCY;
   const isAuthed = Boolean(authToken);
@@ -917,48 +913,6 @@ function App() {
       : formatMoney(value, currency);
     const secondary = isConverted ? formatMoney(value, currency) : null;
     return { primary, secondary };
-  };
-
-  const toggleHoldingForCharts = (holdingId: number) => {
-    setExcludedHoldings((prev) => {
-      const next = new Set(prev);
-      if (next.has(holdingId)) {
-        next.delete(holdingId);
-      } else {
-        next.add(holdingId);
-      }
-      return next;
-    });
-  };
-
-  const setAllHoldingsForCharts = (included: boolean) => {
-    if (!holdings.length) return;
-    if (included) {
-      setExcludedHoldings(new Set());
-      return;
-    }
-    setExcludedHoldings(new Set(holdings.map((holding) => holding.id)));
-  };
-
-  const togglePlacementForCharts = (placementId: number) => {
-    setExcludedPlacements((prev) => {
-      const next = new Set(prev);
-      if (next.has(placementId)) {
-        next.delete(placementId);
-      } else {
-        next.add(placementId);
-      }
-      return next;
-    });
-  };
-
-  const setAllPlacementsForCharts = (included: boolean) => {
-    if (!placements.length) return;
-    if (included) {
-      setExcludedPlacements(new Set());
-      return;
-    }
-    setExcludedPlacements(new Set(placements.map((placement) => placement.id)));
   };
 
   const getHoldingFeeValue = (holding: HoldingStats) =>
@@ -2446,8 +2400,6 @@ const computeAnnualizedReturnBetween = (
   const hasPlacements = placements.length > 0;
   const chartHasHoldings = chartHoldings.length > 0;
   const chartHasPlacements = chartPlacements.length > 0;
-  const allHoldingsIncluded = holdings.length > 0 && excludedHoldings.size === 0;
-  const allPlacementsIncluded = placements.length > 0 && excludedPlacements.size === 0;
   const allocationEmptyMessage =
     !chartHasHoldings && !chartHasPlacements
       ? "Add holdings or placements to see the breakdown."
@@ -2900,66 +2852,6 @@ const computeAnnualizedReturnBetween = (
     setSymbolResults([]);
     setSymbolSearchStatus({ kind: "idle" });
   };
-
-  useEffect(() => {
-    if (!includeAllRef.current) return;
-    const total = holdings.length;
-    includeAllRef.current.indeterminate =
-      excludedHoldings.size > 0 && excludedHoldings.size < total;
-  }, [excludedHoldings.size, holdings.length]);
-
-  useEffect(() => {
-    if (!includeAllPlacementsRef.current) return;
-    const total = placements.length;
-    includeAllPlacementsRef.current.indeterminate =
-      excludedPlacements.size > 0 && excludedPlacements.size < total;
-  }, [excludedPlacements.size, placements.length]);
-
-  useEffect(() => {
-    if (!holdings.length) {
-      if (excludedHoldings.size) {
-        setExcludedHoldings(new Set());
-      }
-      return;
-    }
-    setExcludedHoldings((prev) => {
-      if (!prev.size) return prev;
-      const validIds = new Set(holdings.map((holding) => holding.id));
-      let changed = false;
-      const next = new Set<number>();
-      prev.forEach((id) => {
-        if (validIds.has(id)) {
-          next.add(id);
-        } else {
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
-  }, [holdings, excludedHoldings.size]);
-
-  useEffect(() => {
-    if (!placements.length) {
-      if (excludedPlacements.size) {
-        setExcludedPlacements(new Set());
-      }
-      return;
-    }
-    setExcludedPlacements((prev) => {
-      if (!prev.size) return prev;
-      const validIds = new Set(placements.map((placement) => placement.id));
-      let changed = false;
-      const next = new Set<number>();
-      prev.forEach((id) => {
-        if (validIds.has(id)) {
-          next.add(id);
-        } else {
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
-  }, [placements, excludedPlacements.size]);
 
   useEffect(() => {
     if (!showAddHoldingModal) return;
@@ -3743,12 +3635,21 @@ const computeAnnualizedReturnBetween = (
     try {
       const res = await importBackupJson(file);
       await loadPortfolio();
-      const { accounts, holdings, transactions, cash_transactions } = res.data;
+      const {
+        accounts,
+        holdings,
+        transactions,
+        cash_transactions,
+        placements = 0,
+        placement_snapshots = 0,
+      } = res.data;
       const parts = [
         `${accounts} account${accounts === 1 ? "" : "s"}`,
         `${holdings} holding${holdings === 1 ? "" : "s"}`,
         `${transactions} transaction${transactions === 1 ? "" : "s"}`,
         `${cash_transactions} cash transaction${cash_transactions === 1 ? "" : "s"}`,
+        `${placements} placement${placements === 1 ? "" : "s"}`,
+        `${placement_snapshots} placement snapshot${placement_snapshots === 1 ? "" : "s"}`,
       ];
       setStatus({
         kind: "success",
@@ -4191,6 +4092,7 @@ const computeAnnualizedReturnBetween = (
 
       <main className="grid">
         {!isAuthed ? (
+          <>
           <section className="card auth-card">
             <div className="card-header">
               <div>
@@ -4211,15 +4113,78 @@ const computeAnnualizedReturnBetween = (
                     setAuthStatus({ kind: "idle" });
                   }}
                 >
-                  {authMode === "login" ? "Create account" : "Sign in"}
+                  {authMode === "login" ? "Need access?" : "Back to sign in"}
                 </button>
               </div>
             </div>
-            <form className="form" onSubmit={handleAuthSubmit}>
-              {authMode === "register" && (
-                <label>
+            {authMode === "login" ? (
+              <form
+                key="login"
+                id="auth-login-form"
+                name="login"
+                className="form"
+                onSubmit={handleAuthSubmit}
+                autoComplete="on"
+                method="post"
+                action="/auth/login"
+                data-auth-mode="login"
+                data-np-autofill-form-type="login"
+              >
+                <label htmlFor="login-email">
+                  Email
+                  <input
+                    id="login-email"
+                    name="username"
+                    type="email"
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
+                    placeholder="you@example.com"
+                    autoComplete="username"
+                    inputMode="email"
+                    data-np-autofill-field-type="username"
+                    required
+                  />
+                </label>
+                <label htmlFor="login-password">
+                  Password
+                  <input
+                    id="login-password"
+                    name="password"
+                    type="password"
+                    value={authForm.password}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
+                    placeholder="Password"
+                    autoComplete="current-password"
+                    data-np-autofill-field-type="password"
+                    required
+                  />
+                </label>
+                <button
+                  className="button primary"
+                  type="submit"
+                  disabled={authStatus.kind === "loading"}
+                >
+                  {authStatus.kind === "loading" ? "Signing in..." : "Sign in"}
+                </button>
+              </form>
+            ) : (
+              <form
+                key="register"
+                id="auth-register-form"
+                name="register"
+                className="form"
+                onSubmit={handleAuthSubmit}
+                autoComplete="on"
+                method="post"
+                action="/auth/register"
+                data-auth-mode="register"
+                data-np-autofill-form-type="register"
+              >
+                <label htmlFor="register-name">
                   Name
                   <input
+                    id="register-name"
+                    name="name"
                     type="text"
                     value={authForm.name}
                     onChange={(e) => setAuthForm((prev) => ({ ...prev, name: e.target.value }))}
@@ -4227,47 +4192,49 @@ const computeAnnualizedReturnBetween = (
                     autoComplete="name"
                   />
                 </label>
-              )}
-              <label>
-                Email
-                <input
-                  type="email"
-                  value={authForm.email}
-                  onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                  required
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  type="password"
-                  value={authForm.password}
-                  onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
-                  placeholder="At least 8 characters"
-                  autoComplete={authMode === "login" ? "current-password" : "new-password"}
-                  required
-                />
-              </label>
-              <button
-                className="button primary"
-                type="submit"
-                disabled={authStatus.kind === "loading"}
-              >
-                {authStatus.kind === "loading"
-                  ? authMode === "login"
-                    ? "Signing in..."
-                    : "Creating account..."
-                  : authMode === "login"
-                  ? "Sign in"
-                  : "Create account"}
-              </button>
-            </form>
+                <label htmlFor="register-email">
+                  Email
+                  <input
+                    id="register-email"
+                    name="email"
+                    type="email"
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                    inputMode="email"
+                    data-np-autofill-field-type="email"
+                    required
+                  />
+                </label>
+                <label htmlFor="register-password">
+                  Password
+                  <input
+                    id="register-password"
+                    name="password"
+                    type="password"
+                    value={authForm.password}
+                    onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
+                    placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                    data-np-autofill-field-type="new-password"
+                    required
+                  />
+                </label>
+                <button
+                  className="button primary"
+                  type="submit"
+                  disabled={authStatus.kind === "loading"}
+                >
+                  {authStatus.kind === "loading" ? "Creating account..." : "Create account"}
+                </button>
+              </form>
+            )}
             {authStatus.kind === "error" && (
               <p className="status status-error">{authStatus.message}</p>
             )}
           </section>
+          </>
         ) : (
           <>
             <section className="card summary">
@@ -4923,18 +4890,6 @@ const computeAnnualizedReturnBetween = (
           ) : (
             <div className="table">
               <div className="table-head">
-                <div className="table-toggle">
-                  <input
-                    ref={includeAllRef}
-                    className="table-checkbox"
-                    type="checkbox"
-                    checked={allHoldingsIncluded}
-                    disabled={holdings.length === 0}
-                    onChange={(e) => setAllHoldingsForCharts(e.target.checked)}
-                    aria-label="Include all holdings in charts"
-                    title="Include all holdings in charts"
-                  />
-                </div>
                 <button
                   type="button"
                   className="table-sort"
@@ -4942,25 +4897,6 @@ const computeAnnualizedReturnBetween = (
                   onClick={() => handleSort("instrument")}
                 >
                   Instrument {renderSortIcon("instrument")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Account that holds this position."
-                  onClick={() => handleSort("account")}
-                >
-                  Account {renderSortIcon("account")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Number of shares held and acquisition date."
-                  onClick={() =>
-                    handleSort(sortField === "shares" ? "acquired_at" : "shares")
-                  }
-                >
-                  Shares / Acquisition{" "}
-                  {renderSortIcon(sortField === "acquired_at" ? "acquired_at" : "shares")}
                 </button>
                 <button
                   type="button"
@@ -4973,18 +4909,10 @@ const computeAnnualizedReturnBetween = (
                 <button
                   type="button"
                   className="table-sort"
-                  title="Latest price per share and timestamp."
-                  onClick={() => handleSort("last_price")}
-                >
-                  Last price {renderSortIcon("last_price")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Current market value of the position."
+                  title="Latest price per share and current market value."
                   onClick={() => handleSort("value")}
                 >
-                  Value {renderSortIcon("value")}
+                  Last / Value {renderSortIcon("value")}
                 </button>
                 <button
                   type="button"
@@ -4994,7 +4922,6 @@ const computeAnnualizedReturnBetween = (
                 >
                   P/L {renderSortIcon("pl")}
                 </button>
-                <span>Yahoo Targets</span>
                 <span>Actions</span>
               </div>
               <div className="table-body">
@@ -5002,7 +4929,6 @@ const computeAnnualizedReturnBetween = (
                   const totalCost = getHoldingTotalCost(holding);
                   const feeValue = getHoldingFeeValue(holding);
                   const lastPrice = holding.last_price;
-                  const lastTime = holding.last_snapshot_at;
                   const marketValueNative =
                     lastPrice !== null && lastPrice !== undefined
                       ? lastPrice * holding.shares
@@ -5073,50 +4999,20 @@ const computeAnnualizedReturnBetween = (
                     isForeignCurrency && feeEur !== null && feeEur !== undefined
                       ? formatMoney(feeValue, holding.currency)
                       : null;
-                  const annualized = computeAnnualizedReturn(gainPct, holding.acquired_at);
                   const instrumentName = holding.name || holding.symbol || holding.isin || "Unknown";
                   const instrumentHref = holding.href || "";
                   const gainClassValue =
                     gainAbsEur !== null && gainAbsEur !== undefined ? gainAbsEur : gainAbsNative;
+                  const gainSignSource =
+                    gainPct !== null && gainPct !== undefined ? gainPct : gainClassValue;
                   const gainClass =
-                    gainClassValue === null || gainClassValue === undefined
+                    gainSignSource === null || gainSignSource === undefined
                       ? ""
-                      : gainClassValue >= 0
-                        ? "positive"
-                        : "negative";
-                  const yahooTargetLow = holding.yahoo_target_low;
-                  const yahooTargetMean = holding.yahoo_target_mean;
-                  const yahooTargetHigh = holding.yahoo_target_high;
-                  const yahooTargetMeanDisplay = formatMoney(yahooTargetMean, holding.currency);
-                  const yahooTargetLowDisplay = formatMoney(yahooTargetLow, holding.currency);
-                  const yahooTargetHighDisplay = formatMoney(yahooTargetHigh, holding.currency);
-                  const yahooTargetParsedDisplay = formatDate(holding.yahoo_target_parsed_at);
-                  const yahooTargetDeltaPct =
-                    yahooTargetMean !== null &&
-                    yahooTargetMean !== undefined &&
-                    lastPrice !== null &&
-                    lastPrice !== undefined &&
-                    lastPrice > 0
-                      ? (yahooTargetMean - lastPrice) / lastPrice
-                      : null;
-                  const yahooTargetDeltaClass =
-                    yahooTargetDeltaPct === null || yahooTargetDeltaPct === undefined
-                      ? ""
-                      : yahooTargetDeltaPct >= 0
+                      : gainSignSource >= 0
                         ? "positive"
                         : "negative";
                   return (
                     <div className="table-row" key={holding.id}>
-                      <span className="table-toggle" data-label="Charts">
-                        <input
-                          className="table-checkbox"
-                          type="checkbox"
-                          checked={!excludedHoldings.has(holding.id)}
-                          onChange={() => toggleHoldingForCharts(holding.id)}
-                          aria-label={`Include ${holding.symbol || holding.name || "holding"} in charts`}
-                          title="Include in charts"
-                        />
-                      </span>
                       <span className="instrument-cell" data-label="Instrument">
                         <div className="instrument-name-row">
                           {instrumentHref ? (
@@ -5133,21 +5029,10 @@ const computeAnnualizedReturnBetween = (
                           )}
                         </div>
                       </span>
-                      <span data-label="Account">
-                        {holding.account?.name || "—"}
-                        {holding.account?.account_type && (
-                          <small>{holding.account.account_type}</small>
-                        )}
-                      </span>
-                      <span data-label="Shares / Acquisition">
-                        <span className="cost-values">{holding.shares.toFixed(2)}</span>
-                        <small>
-                          {holding.acquired_at ? formatDate(holding.acquired_at) : "—"}
-                        </small>
-                      </span>
                       <span data-label="Cost / Total">
                       <span className="cost-values">
                         {costPerSharePrimary}
+                        <small> (# {holding.shares.toFixed(2)})</small>
                         {costPerShareSecondary && <small> ({costPerShareSecondary})</small>}
                         </span>
                       <span className="total-cost">
@@ -5164,41 +5049,24 @@ const computeAnnualizedReturnBetween = (
                         </span>
 
                       </span>
-                      <span data-label="Last price">
+                      <span data-label="Last / Value">
                         <span className="cost-values">
-                        {lastPriceDisplay.primary}
-                        {lastPriceDisplay.secondary && <small>{" "}({lastPriceDisplay.secondary})</small>}
-                        </span>
-                        <small>{formatDateTime(lastTime)}</small>
-                      </span>
-                      <span data-label="Value">
-                        {valueDisplay.primary}
-                        {valueDisplay.secondary && <small>{valueDisplay.secondary}</small>}
-                      </span>
-                      <span className={gainClass} data-label="P/L">
-                        {gainDisplayPrimary}
-                        {gainDisplaySecondary && <small>{gainDisplaySecondary}</small>}
-                        <small>{formatPercentSigned(gainPct)}</small>
-                        {annualized !== null && (
-                          <small>Ann.: {formatPercentSigned(annualized)}</small>
-                        )}
-                      </span>
-                      <span data-label="Yahoo Targets">
-                        <span className="cost-values">
-                          {yahooTargetMeanDisplay}
-                          {yahooTargetDeltaPct !== null && yahooTargetDeltaPct !== undefined ? (
-                            <small className={yahooTargetDeltaClass}>
-                              {" "}
-                              ({formatPercentSigned(yahooTargetDeltaPct)})
-                            </small>
-                          ) : (
-                            <small> vs last —</small>
+                          {lastPriceDisplay.primary}
+                          {lastPriceDisplay.secondary && (
+                            <small> ({lastPriceDisplay.secondary})</small>
                           )}
                         </span>
-                        <small>
-                          ( {yahooTargetLowDisplay} / {yahooTargetHighDisplay} )
-                        </small>
-                        <small>{yahooTargetParsedDisplay}</small>
+                        <span className="total-cost">
+                          {valueDisplay.primary}
+                          {valueDisplay.secondary && <small> ({valueDisplay.secondary})</small>}
+                        </span>
+                      </span>
+                      <span className="pl-cell" data-label="P/L">
+                        <span className={`cost-values pl-percent ${gainClass}`.trim()}>
+                          {formatPercentSigned(gainPct)}
+                        </span>
+                        {gainDisplayPrimary}
+                        {gainDisplaySecondary && <small>{gainDisplaySecondary}</small>}
                       </span>
                       <span className="holding-actions" data-label="Actions">
                         <button
@@ -5250,18 +5118,6 @@ const computeAnnualizedReturnBetween = (
           ) : (
             <div className="table placements-table">
               <div className="table-head">
-                <div className="table-toggle">
-                  <input
-                    ref={includeAllPlacementsRef}
-                    className="table-checkbox"
-                    type="checkbox"
-                    checked={allPlacementsIncluded}
-                    disabled={placements.length === 0}
-                    onChange={(e) => setAllPlacementsForCharts(e.target.checked)}
-                    aria-label="Include all placements in charts and KPIs"
-                    title="Include all placements in charts and KPIs"
-                  />
-                </div>
                 <span>Name</span>
                 <span>Account</span>
                 <span>Initial value (date)</span>
@@ -5315,20 +5171,8 @@ const computeAnnualizedReturnBetween = (
                     placement.account_id !== null && placement.account_id !== undefined
                       ? accountsById.get(placement.account_id)
                       : null;
-                  const placementLabel =
-                    placement.name || placement.placement_type || "placement";
                   return (
                     <div className="table-row" key={placement.id}>
-                      <span className="table-toggle" data-label="Charts">
-                        <input
-                          className="table-checkbox"
-                          type="checkbox"
-                          checked={!excludedPlacements.has(placement.id)}
-                          onChange={() => togglePlacementForCharts(placement.id)}
-                          aria-label={`Include ${placementLabel} in charts and KPIs`}
-                          title="Include in charts and KPIs"
-                        />
-                      </span>
                       <span className="instrument-cell" data-label="Name">
                         <span className="instrument-name-row">{placement.name}</span>
                         <small>{placement.placement_type || "—"}</small>
@@ -7494,7 +7338,7 @@ const computeAnnualizedReturnBetween = (
             <div className="confirm-modal-body">
               <p className="confirm-warning">
                 Importing this backup will replace all your current data (accounts, holdings,
-                transactions, and cash). This action is irreversible.
+                placements, transactions, and cash). This action is irreversible.
               </p>
               <div className="confirm-details">
                 <span className="pill ghost">File {backupImportTarget.name}</span>

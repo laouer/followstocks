@@ -1,5 +1,13 @@
 import axios from "axios";
 
+declare global {
+  interface Window {
+    __FOLLOWSTOCKS_CONFIG__?: {
+      API_BASE_URL?: string;
+    };
+  }
+}
+
 export interface HoldingStats {
   id: number;
   account_id?: number | null;
@@ -94,6 +102,8 @@ export interface BackupImportResult {
   holdings: number;
   transactions: number;
   cash_transactions: number;
+  placements: number;
+  placement_snapshots: number;
 }
 
 export interface HoldingSellResult {
@@ -175,9 +185,10 @@ export interface AnalystForecastResponse {
 }
 
 const AUTH_TOKEN_KEY = "followstocks_token";
+const runtimeApiBase = window.__FOLLOWSTOCKS_CONFIG__?.API_BASE_URL?.trim();
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE || "http://localhost:8000",
+  baseURL: runtimeApiBase || import.meta.env.VITE_API_BASE || "http://localhost:8000",
   timeout: 5000,
 });
 

@@ -10,6 +10,15 @@ docker pull meanouar/followstocks
 docker run --name followstocks -p 8000:8000 -p 4173:4173 meanouar/followstocks
 ```
 
+Set frontend API URL at runtime (useful for reverse-proxy/domain deployments):
+
+```bash
+docker run --name followstocks \
+  -p 8000:8000 -p 4173:4173 \
+  -e API_BASE_URL="https://api.your-domain.com" \
+  meanouar/followstocks
+```
+
 Persist SQLite data locally:
 
 ```bash
@@ -104,6 +113,17 @@ npm run dev    # opens http://localhost:5173
 ```
 
 Set `VITE_API_BASE` in `.env` if the API is not on `http://localhost:8000`.
+
+## iOS (SwiftUI)
+
+A native iOS starter app is available in `ios/`.
+
+```bash
+open ios/FollowStocks.xcodeproj
+```
+
+Then run the `FollowStocks` scheme in a simulator.  
+Setup details are in `ios/README.md`.
 
 ### What it shows
 - Portfolio summary (invested, market value, unrealized P/L, last-hour change).
