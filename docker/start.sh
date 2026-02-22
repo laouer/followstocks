@@ -10,5 +10,5 @@ window.__FOLLOWSTOCKS_CONFIG__ = Object.assign({}, window.__FOLLOWSTOCKS_CONFIG_
 });
 EOF
 
-python -m http.server 4173 --directory /app/frontend/dist &
+python /app/spa_server.py --host 0.0.0.0 --port 4173 --directory /app/frontend/dist &
 exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000

@@ -114,12 +114,12 @@ async def fetch_tracker_quote(tracker: str, symbol: str) -> dict:
     return await fetch_yfinance_quote(symbol)
 
 
-async def fetch_fx_rate(base: str, quote: str) -> float | None:
+def fetch_fx_rate_sync(base: str, quote: str) -> float | None:
     """
-    Fetch foreign exchange rate from Yahoo Finance.
+    Synchronous FX rate fetcher using Yahoo Finance.
 
     Returns the exchange rate from base currency to quote currency.
-    Example: fetch_fx_rate("USD", "EUR") returns USD/EUR rate.
+    Example: fetch_fx_rate_sync("USD", "EUR") returns USD/EUR rate.
     """
     base = base.upper().strip()
     quote = quote.upper().strip()
@@ -127,22 +127,29 @@ async def fetch_fx_rate(base: str, quote: str) -> float | None:
         return 1.0
     symbol = f"{base}{quote}=X"
 
-    def _sync_fetch():
-        ticker = yf.Ticker(symbol)
-        try:
-            hist = ticker.history(period="5d", interval="1d")
-            if hist is None or hist.empty:
-                set_yfinance_ok()
-                return None
-            last_row = hist.tail(1)
+    ticker = yf.Ticker(symbol)
+    try:
+        hist = ticker.history(period="5d", interval="1d")
+        if hist is None or hist.empty:
             set_yfinance_ok()
-            return float(last_row["Close"].iloc[0])
-        except Exception as exc:
-            log.warning("yfinance FX failed for %s: %s", symbol, exc)
-            set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
             return None
+        last_row = hist.tail(1)
+        set_yfinance_ok()
+        return float(last_row["Close"].iloc[0])
+    except Exception as exc:
+        log.warning("yfinance FX failed for %s: %s", symbol, exc)
+        set_yfinance_error(YFINANCE_UNREACHABLE_MESSAGE)
+        return None
 
-    return await asyncio.to_thread(_sync_fetch)
+
+async def fetch_fx_rate(base: str, quote: str) -> float | None:
+    """
+    Fetch foreign exchange rate from Yahoo Finance.
+
+    Returns the exchange rate from base currency to quote currency.
+    Example: fetch_fx_rate("USD", "EUR") returns USD/EUR rate.
+    """
+    return await asyncio.to_thread(fetch_fx_rate_sync, base, quote)
 
 
 async def search_yfinance(query: str) -> list[dict]:

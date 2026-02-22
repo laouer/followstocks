@@ -1,9 +1,10 @@
-from datetime import datetime
-from typing import List, Optional
+from datetime import date, datetime, timedelta
+from typing import Any, List, Optional
 
 from sqlalchemy.orm import Session, selectinload
 
 from . import models, schemas
+from .services.market_data_service import fetch_fx_rate_sync
 
 DEFAULT_ACCOUNT_NAME = "Main"
 
@@ -665,6 +666,314 @@ def get_placement_snapshots(
         .limit(limit)
         .all()
     )
+
+
+def capture_daily_history(
+    db: Session,
+    user_id: int,
+    snapshot_date: Optional[date] = None,
+) -> tuple[int, int]:
+    snapshot_day = snapshot_date or date.today()
+    holdings = (
+        db.query(models.Holding)
+        .filter(models.Holding.user_id == user_id)
+        .all()
+    )
+
+    grouped: dict[str, dict[str, object]] = {}
+    fx_rate_cache: dict[str, float | None] = {"EUR": 1.0}
+
+    def convert_to_eur(
+        amount: float | None,
+        currency: str | None,
+        fallback_rate: float | None = None,
+    ) -> float | None:
+        if amount is None:
+            return None
+        curr = (currency or "EUR").upper().strip() or "EUR"
+        if curr == "EUR":
+            return float(amount)
+        if curr not in fx_rate_cache:
+            fx_rate_cache[curr] = fetch_fx_rate_sync(curr, "EUR")
+        rate = fx_rate_cache.get(curr)
+        if (rate is None or rate <= 0) and fallback_rate and fallback_rate > 0:
+            rate = fallback_rate
+        if rate is None or rate <= 0:
+            return float(amount)
+        return float(amount) * float(rate)
+
+    for holding in holdings:
+        symbol = (holding.symbol or "").upper().strip()
+        if not symbol:
+            continue
+        currency = (holding.currency or "EUR").upper().strip() or "EUR"
+        shares = float(holding.shares or 0.0)
+        fee_value = float(holding.acquisition_fee_value or 0.0)
+        cost_total = shares * float(holding.cost_basis or 0.0) + fee_value
+        entry = grouped.get(symbol)
+        if entry is None:
+            entry = {
+                "symbol": symbol,
+                "name": holding.name or symbol,
+                "currency": currency,
+                "shares": 0.0,
+                "cost_total": 0.0,
+                "priced_shares": 0.0,
+                "market_value": 0.0,
+                "fx_weighted_sum": 0.0,
+                "fx_weight": 0.0,
+            }
+            grouped[symbol] = entry
+
+        entry["shares"] = float(entry["shares"]) + shares
+        entry["cost_total"] = float(entry["cost_total"]) + cost_total
+        fx_rate = float(holding.fx_rate) if holding.fx_rate else None
+        if fx_rate and fx_rate > 0:
+            entry["fx_weighted_sum"] = float(entry["fx_weighted_sum"]) + (cost_total * fx_rate)
+            entry["fx_weight"] = float(entry["fx_weight"]) + cost_total
+        if not entry.get("name") and holding.name:
+            entry["name"] = holding.name
+
+        price = holding.last_price
+        if price is not None:
+            entry["priced_shares"] = float(entry["priced_shares"]) + shares
+            entry["market_value"] = float(entry["market_value"]) + (shares * float(price))
+
+    existing_rows = (
+        db.query(models.HoldingDailySnapshot)
+        .filter(
+            models.HoldingDailySnapshot.user_id == user_id,
+            models.HoldingDailySnapshot.snapshot_date == snapshot_day,
+        )
+        .all()
+    )
+    existing_by_symbol = {row.symbol.upper(): row for row in existing_rows}
+    current_symbols = set(grouped.keys())
+    for row in existing_rows:
+        if row.symbol.upper() not in current_symbols:
+            db.delete(row)
+
+    holdings_saved = 0
+    holdings_value = 0.0
+    holdings_cost = 0.0
+    for symbol, payload in grouped.items():
+        shares = float(payload["shares"])
+        priced_shares = float(payload["priced_shares"])
+        cost_total = float(payload["cost_total"])
+        fx_weight = float(payload.get("fx_weight", 0.0) or 0.0)
+        fallback_fx_rate = (
+            float(payload["fx_weighted_sum"]) / fx_weight if fx_weight > 0 else None
+        )
+        currency = str(payload.get("currency") or "EUR")
+        market_value = float(payload["market_value"]) if priced_shares > 0 else None
+        close_price = (market_value / priced_shares) if market_value is not None and priced_shares > 0 else None
+        gain_abs = (market_value - cost_total) if market_value is not None else None
+        gain_pct = (gain_abs / cost_total) if gain_abs is not None and cost_total > 0 else None
+
+        snapshot_row = existing_by_symbol.get(symbol)
+        if snapshot_row is None:
+            snapshot_row = models.HoldingDailySnapshot(
+                user_id=user_id,
+                snapshot_date=snapshot_day,
+                symbol=symbol,
+            )
+
+        snapshot_row.name = str(payload.get("name") or symbol)
+        snapshot_row.currency = currency
+        snapshot_row.shares = shares
+        snapshot_row.close_price = close_price
+        snapshot_row.cost_total = cost_total
+        snapshot_row.market_value = market_value
+        snapshot_row.gain_abs = gain_abs
+        snapshot_row.gain_pct = gain_pct
+        snapshot_row.updated_at = datetime.utcnow()
+        db.add(snapshot_row)
+        holdings_saved += 1
+        holdings_cost += convert_to_eur(cost_total, currency, fallback_fx_rate) or 0.0
+        if market_value is not None:
+            holdings_value += convert_to_eur(market_value, currency, fallback_fx_rate) or 0.0
+
+    placements = get_placements(db, user_id)
+    placements_value = 0.0
+    placements_cost = 0.0
+    for placement in placements:
+        placement_currency = (placement.currency or "EUR").upper().strip() or "EUR"
+        if placement.current_value is not None:
+            placements_value += convert_to_eur(placement.current_value, placement_currency) or 0.0
+        base = (
+            placement.initial_value
+            if placement.initial_value is not None
+            else placement.current_value
+        )
+        if base is not None:
+            contributions = placement.total_contributions or 0.0
+            withdrawals = placement.total_withdrawals or 0.0
+            placements_cost += (
+                convert_to_eur(base + contributions - withdrawals, placement_currency) or 0.0
+            )
+
+    accounts = get_accounts(db, user_id)
+    liquidity_value = sum(account.liquidity or 0.0 for account in accounts)
+    total_cost = holdings_cost + placements_cost
+    total_value = holdings_value + placements_value + liquidity_value
+    total_gain_abs = total_value - total_cost
+    total_gain_pct = (total_gain_abs / total_cost) if total_cost > 0 else None
+
+    portfolio_row = (
+        db.query(models.PortfolioDailySnapshot)
+        .filter(
+            models.PortfolioDailySnapshot.user_id == user_id,
+            models.PortfolioDailySnapshot.snapshot_date == snapshot_day,
+        )
+        .first()
+    )
+    if portfolio_row is None:
+        portfolio_row = models.PortfolioDailySnapshot(
+            user_id=user_id,
+            snapshot_date=snapshot_day,
+        )
+
+    portfolio_row.holdings_value = holdings_value
+    portfolio_row.placements_value = placements_value
+    portfolio_row.liquidity_value = liquidity_value
+    portfolio_row.total_cost = total_cost
+    portfolio_row.total_value = total_value
+    portfolio_row.total_gain_abs = total_gain_abs
+    portfolio_row.total_gain_pct = total_gain_pct
+    portfolio_row.updated_at = datetime.utcnow()
+    db.add(portfolio_row)
+
+    db.commit()
+    return holdings_saved, 1
+
+
+def get_holding_daily_snapshots(
+    db: Session,
+    user_id: int,
+    days: int = 90,
+    symbol: Optional[str] = None,
+) -> List[models.HoldingDailySnapshot]:
+    start_day = date.today() - timedelta(days=max(days - 1, 0))
+    query = db.query(models.HoldingDailySnapshot).filter(
+        models.HoldingDailySnapshot.user_id == user_id,
+        models.HoldingDailySnapshot.snapshot_date >= start_day,
+    )
+    if symbol:
+        query = query.filter(models.HoldingDailySnapshot.symbol == symbol.upper().strip())
+    return query.order_by(
+        models.HoldingDailySnapshot.snapshot_date.desc(),
+        models.HoldingDailySnapshot.symbol.asc(),
+    ).all()
+
+
+def get_portfolio_daily_snapshots(
+    db: Session,
+    user_id: int,
+    days: int = 90,
+) -> List[models.PortfolioDailySnapshot]:
+    start_day = date.today() - timedelta(days=max(days - 1, 0))
+    return (
+        db.query(models.PortfolioDailySnapshot)
+        .filter(
+            models.PortfolioDailySnapshot.user_id == user_id,
+            models.PortfolioDailySnapshot.snapshot_date >= start_day,
+        )
+        .order_by(models.PortfolioDailySnapshot.snapshot_date.desc())
+        .all()
+    )
+
+
+def _bsf120_row_to_item(row: models.Bsf120ForecastSnapshot) -> dict[str, Any]:
+    return {
+        "symbol": row.symbol,
+        "name": row.name,
+        "currency": row.currency,
+        "price": row.price,
+        "target_low_price": row.target_low_price,
+        "target_mean_price": row.target_mean_price,
+        "target_high_price": row.target_high_price,
+        "analyst_count": row.analyst_count,
+        "recommendation_mean": row.recommendation_mean,
+        "recommendation_key": row.recommendation_key,
+        "upside_pct": row.upside_pct,
+    }
+
+
+def save_bsf120_forecast_snapshot(
+    db: Session,
+    items: List[dict[str, Any]],
+    snapshot_at: Optional[datetime] = None,
+) -> int:
+    as_of = snapshot_at or datetime.utcnow()
+    snapshot_day = as_of.date()
+    existing_rows = (
+        db.query(models.Bsf120ForecastSnapshot)
+        .filter(models.Bsf120ForecastSnapshot.snapshot_date == snapshot_day)
+        .all()
+    )
+    existing_by_symbol = {row.symbol.upper(): row for row in existing_rows}
+    current_symbols: set[str] = set()
+
+    for item in items:
+        symbol = str(item.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+        current_symbols.add(symbol)
+        row = existing_by_symbol.get(symbol)
+        if row is None:
+            row = models.Bsf120ForecastSnapshot(
+                snapshot_date=snapshot_day,
+                symbol=symbol,
+                created_at=as_of,
+            )
+
+        row.snapshot_at = as_of
+        row.name = item.get("name")
+        row.currency = item.get("currency")
+        row.price = item.get("price")
+        row.target_low_price = item.get("target_low_price")
+        row.target_mean_price = item.get("target_mean_price")
+        row.target_high_price = item.get("target_high_price")
+        row.analyst_count = item.get("analyst_count")
+        row.recommendation_mean = item.get("recommendation_mean")
+        row.recommendation_key = item.get("recommendation_key")
+        row.upside_pct = item.get("upside_pct")
+        row.updated_at = datetime.utcnow()
+        db.add(row)
+
+    for symbol, row in existing_by_symbol.items():
+        if symbol not in current_symbols:
+            db.delete(row)
+
+    db.commit()
+    return len(current_symbols)
+
+
+def get_latest_bsf120_forecast_snapshot(
+    db: Session,
+) -> tuple[List[dict[str, Any]], datetime] | None:
+    latest_row = (
+        db.query(models.Bsf120ForecastSnapshot)
+        .order_by(
+            models.Bsf120ForecastSnapshot.snapshot_at.desc(),
+            models.Bsf120ForecastSnapshot.id.desc(),
+        )
+        .first()
+    )
+    if latest_row is None:
+        return None
+
+    rows = (
+        db.query(models.Bsf120ForecastSnapshot)
+        .filter(models.Bsf120ForecastSnapshot.snapshot_date == latest_row.snapshot_date)
+        .order_by(models.Bsf120ForecastSnapshot.symbol.asc())
+        .all()
+    )
+    if not rows:
+        return None
+
+    latest_at = max((row.snapshot_at for row in rows), default=latest_row.snapshot_at)
+    return [_bsf120_row_to_item(row) for row in rows], latest_at
 
 
 def portfolio_summary(db: Session, user_id: int) -> schemas.PortfolioResponse:

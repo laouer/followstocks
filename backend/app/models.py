@@ -23,6 +23,12 @@ class User(Base):
         "CashTransaction", back_populates="user", cascade="all, delete-orphan"
     )
     placements = relationship("Placement", back_populates="user", cascade="all, delete-orphan")
+    holding_daily_snapshots = relationship(
+        "HoldingDailySnapshot", back_populates="user", cascade="all, delete-orphan"
+    )
+    portfolio_daily_snapshots = relationship(
+        "PortfolioDailySnapshot", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Account(Base):
@@ -81,6 +87,92 @@ class Holding(Base):
 
     user = relationship("User", back_populates="holdings")
     account = relationship("Account", back_populates="holdings")
+
+
+class HoldingDailySnapshot(Base):
+    __tablename__ = "holding_daily_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=True)
+    currency = Column(String, default="EUR", nullable=False)
+    shares = Column(Float, nullable=False)
+    close_price = Column(Float, nullable=True)
+    cost_total = Column(Float, nullable=False)
+    market_value = Column(Float, nullable=True)
+    gain_abs = Column(Float, nullable=True)
+    gain_pct = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="holding_daily_snapshots")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "snapshot_date",
+            "symbol",
+            name="uix_holding_daily_snapshot_user_date_symbol",
+        ),
+    )
+
+
+class PortfolioDailySnapshot(Base):
+    __tablename__ = "portfolio_daily_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    holdings_value = Column(Float, nullable=False, default=0.0)
+    placements_value = Column(Float, nullable=False, default=0.0)
+    liquidity_value = Column(Float, nullable=False, default=0.0)
+    total_cost = Column(Float, nullable=False, default=0.0)
+    total_value = Column(Float, nullable=False, default=0.0)
+    total_gain_abs = Column(Float, nullable=False, default=0.0)
+    total_gain_pct = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="portfolio_daily_snapshots")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "snapshot_date",
+            name="uix_portfolio_daily_snapshot_user_date",
+        ),
+    )
+
+
+class Bsf120ForecastSnapshot(Base):
+    __tablename__ = "bsf120_forecast_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    snapshot_at = Column(DateTime, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=True)
+    currency = Column(String, nullable=True)
+    price = Column(Float, nullable=True)
+    target_low_price = Column(Float, nullable=True)
+    target_mean_price = Column(Float, nullable=True)
+    target_high_price = Column(Float, nullable=True)
+    analyst_count = Column(Integer, nullable=True)
+    recommendation_mean = Column(Float, nullable=True)
+    recommendation_key = Column(String, nullable=True)
+    upside_pct = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_date",
+            "symbol",
+            name="uix_bsf120_forecast_snapshot_date_symbol",
+        ),
+    )
 
 
 class Transaction(Base):

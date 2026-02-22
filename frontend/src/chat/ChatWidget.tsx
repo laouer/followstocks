@@ -16,9 +16,21 @@ type ChatWidgetProps = {
   apiBase: string;
   lang: string;
   t: (value: string) => string;
+  toggleToken?: number;
+  hideFab?: boolean;
+  hideFabOnMobileNav?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
-export default function ChatWidget({ apiBase, lang, t }: ChatWidgetProps) {
+export default function ChatWidget({
+  apiBase,
+  lang,
+  t,
+  toggleToken,
+  hideFab = false,
+  hideFabOnMobileNav = false,
+  onOpenChange,
+}: ChatWidgetProps) {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatExpanded, setChatExpanded] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => [
@@ -35,6 +47,19 @@ export default function ChatWidget({ apiBase, lang, t }: ChatWidgetProps) {
     if (!chatMessagesRef?.current) return;
     chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
   }, [chatMessages, chatStreaming, chatOpen]);
+
+  useEffect(() => {
+    if (toggleToken === undefined || toggleToken === 0) return;
+    setChatOpen((prev) => {
+      const next = !prev;
+      if (!next) setChatExpanded(false);
+      return next;
+    });
+  }, [toggleToken]);
+
+  useEffect(() => {
+    onOpenChange?.(chatOpen);
+  }, [chatOpen, onOpenChange]);
 
   useEffect(() => {
     const body = document.body;
@@ -114,18 +139,20 @@ export default function ChatWidget({ apiBase, lang, t }: ChatWidgetProps) {
 
   return (
     <>
-      <div
-        className={`chat-fab ${chatOpen ? "open" : ""}`}
-        onClick={() =>
-          setChatOpen((v) => {
-            const next = !v;
-            if (!next) setChatExpanded(false);
-            return next;
-          })
-        }
-      >
-        💬
-      </div>
+      {!hideFab && (
+        <div
+          className={`chat-fab ${chatOpen ? "open" : ""}${hideFabOnMobileNav ? " mobile-nav-hidden" : ""}`}
+          onClick={() =>
+            setChatOpen((v) => {
+              const next = !v;
+              if (!next) setChatExpanded(false);
+              return next;
+            })
+          }
+        >
+          💬
+        </div>
+      )}
       {chatOpen && chatExpanded && <div className="chat-backdrop" />}
       {chatOpen && (
         <div className={`chat-panel ${chatExpanded ? "expanded" : ""}`}>

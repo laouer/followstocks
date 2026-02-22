@@ -426,6 +426,53 @@ class PlacementSnapshot(PlacementSnapshotBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HoldingDailySnapshot(BaseModel):
+    id: int
+    snapshot_date: date
+    symbol: str
+    name: Optional[str] = None
+    currency: CurrencyCode = "EUR"
+    shares: float
+    close_price: Optional[float] = None
+    cost_total: float
+    market_value: Optional[float] = None
+    gain_abs: Optional[float] = None
+    gain_pct: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PortfolioDailySnapshot(BaseModel):
+    id: int
+    snapshot_date: date
+    holdings_value: float
+    placements_value: float
+    liquidity_value: float
+    total_cost: float
+    total_value: float
+    total_gain_abs: float
+    total_gain_pct: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DailyHistoryResponse(BaseModel):
+    updated_at: datetime
+    portfolio: List[PortfolioDailySnapshot] = Field(default_factory=list)
+    holdings: List[HoldingDailySnapshot] = Field(default_factory=list)
+
+
+class DailyHistoryCaptureResult(BaseModel):
+    status: str
+    snapshot_date: date
+    holdings_saved: int
+    portfolio_saved: int
+
+
 class PortfolioSummary(BaseModel):
     total_cost: float
     total_value: Optional[float] = None
@@ -633,6 +680,40 @@ class BackupPlacementSnapshot(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BackupHoldingDailySnapshot(BaseModel):
+    id: int
+    snapshot_date: date
+    symbol: str
+    name: Optional[str] = None
+    currency: CurrencyCode = "EUR"
+    shares: float
+    close_price: Optional[float] = None
+    cost_total: float
+    market_value: Optional[float] = None
+    gain_abs: Optional[float] = None
+    gain_pct: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BackupPortfolioDailySnapshot(BaseModel):
+    id: int
+    snapshot_date: date
+    holdings_value: float
+    placements_value: float
+    liquidity_value: float
+    total_cost: float
+    total_value: float
+    total_gain_abs: float
+    total_gain_pct: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class BackupPayload(BaseModel):
     version: int = 1
     exported_at: datetime
@@ -642,6 +723,8 @@ class BackupPayload(BaseModel):
     cash_transactions: List[BackupCashTransaction]
     placements: List[BackupPlacement] = Field(default_factory=list)
     placement_snapshots: List[BackupPlacementSnapshot] = Field(default_factory=list)
+    holding_daily_snapshots: List[BackupHoldingDailySnapshot] = Field(default_factory=list)
+    portfolio_daily_snapshots: List[BackupPortfolioDailySnapshot] = Field(default_factory=list)
 
 
 class BackupImportResult(BaseModel):
@@ -651,6 +734,8 @@ class BackupImportResult(BaseModel):
     cash_transactions: int
     placements: int = 0
     placement_snapshots: int = 0
+    holding_daily_snapshots: int = 0
+    portfolio_daily_snapshots: int = 0
 
 
 class Cac40Item(BaseModel):

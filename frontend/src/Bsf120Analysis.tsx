@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import FloatingSidebar from "./FloatingSidebar";
+import ChatWidget from "./chat/ChatWidget";
+import PageAvatarMenu from "./PageAvatarMenu";
 import { AnalystForecastItem, AnalystForecastResponse, fetchBsf120Analysis } from "./api";
 
 type Status = {
@@ -50,14 +51,31 @@ const recommendationLabel = (key?: string | null) => {
 
 const RECO_TOOLTIP =
   "Yahoo recommendation mean:\n1.0 = Strong Buy\n2.0 = Buy\n3.0 = Hold\n4.0 = Sell\n5.0 = Strong Sell\nLower is more bullish.";
+const CHAT_API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const CHAT_TRANSLATOR = (value: string) => {
+  if (value === "Hello, I can help with your portfolio analysis today.") {
+    return "Hello, I can help with BSF120 and investment questions.";
+  }
+  if (value === "Ask a question") {
+    return "Ask an investment question";
+  }
+  return value;
+};
+const resolveChatLang = () => {
+  if (typeof navigator === "undefined" || !navigator.language) return "en";
+  return navigator.language.split("-")[0] || "en";
+};
 
 function Bsf120Analysis() {
   const [data, setData] = useState<AnalystForecastResponse | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [includeMissing, setIncludeMissing] = useState(false);
   const [nameFilter, setNameFilter] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("upside");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [sortKey, setSortKey] = useState<SortKey>("reco");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatToggleToken, setChatToggleToken] = useState(0);
+  const chatLang = resolveChatLang();
 
   const loadAnalysis = useCallback(async () => {
     setStatus({ kind: "loading", message: "Loading BSF120 analyst forecasts..." });
@@ -128,7 +146,9 @@ function Bsf120Analysis() {
   }, [filteredItems, sortDir, sortKey]);
 
   const handleSort = (key: SortKey) => {
-    setSortDir((prev) => (key === sortKey ? (prev === "asc" ? "desc" : "asc") : "desc"));
+    setSortDir((prev) =>
+      key === sortKey ? (prev === "asc" ? "desc" : "asc") : key === "reco" ? "asc" : "desc"
+    );
     setSortKey(key);
   };
 
@@ -140,7 +160,6 @@ function Bsf120Analysis() {
 
   return (
     <div className="page">
-      <FloatingSidebar />
       <main className="grid">
         <section className="card">
           <div className="card-header">
@@ -155,6 +174,10 @@ function Bsf120Analysis() {
               <button className="button compact" type="button" onClick={loadAnalysis}>
                 Refresh
               </button>
+              <PageAvatarMenu
+                chatActive={chatOpen}
+                onChatToggle={() => setChatToggleToken((prev) => prev + 1)}
+              />
             </div>
           </div>
 
@@ -180,6 +203,55 @@ function Bsf120Analysis() {
                   placeholder="Type a company or ticker"
                 />
               </label>
+              <div className="analysis-sort">
+                <span className="analysis-sort-label">Sort</span>
+                <div className="analysis-sort-chips" role="group" aria-label="Sort BSF120 rows">
+                  <button
+                    type="button"
+                    className={`table-sort ${sortKey === "upside" ? "active" : ""}`}
+                    onClick={() => handleSort("upside")}
+                  >
+                    Upside {renderSortIcon("upside")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`table-sort ${sortKey === "company" ? "active" : ""}`}
+                    onClick={() => handleSort("company")}
+                  >
+                    Name {renderSortIcon("company")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`table-sort ${sortKey === "reco" ? "active" : ""}`}
+                    onClick={() => handleSort("reco")}
+                  >
+                    Reco {renderSortIcon("reco")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`table-sort ${sortKey === "target_mean" ? "active" : ""}`}
+                    onClick={() => handleSort("target_mean")}
+                  >
+                    Target mean {renderSortIcon("target_mean")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`table-sort ${sortKey === "analysts" ? "active" : ""}`}
+                    onClick={() => handleSort("analysts")}
+                  >
+                    Analysts {renderSortIcon("analysts")}
+                  </button>
+                  
+                  <button
+                    type="button"
+                    className={`table-sort ${sortKey === "price" ? "active" : ""}`}
+                    onClick={() => handleSort("price")}
+                  >
+                    Price {renderSortIcon("price")}
+                  </button>
+                  
+                </div>
+              </div>
             </div>
             <div className="analysis-meta">
               <p className="muted helper">
@@ -200,6 +272,77 @@ function Bsf120Analysis() {
           {status.kind === "error" && status.message && (
             <p className="status status-error">{status.message}</p>
           )}
+
+          <div className="bsf120-mobile-list">
+            {sortedItems.length === 0 ? (
+              <p className="empty">No symbols match your search.</p>
+            ) : (
+              sortedItems.map((item) => {
+                const currency = item.currency || "EUR";
+                const upsideClass =
+                  item.upside_pct === null || item.upside_pct === undefined
+                    ? ""
+                    : item.upside_pct >= 0
+                      ? "positive"
+                      : "negative";
+                return (
+                  <article className="bsf120-mobile-card" key={`${item.symbol}-mobile`}>
+                    <div className="bsf120-mobile-head">
+                      <a
+                        className="analysis-link"
+                        href={`https://fr.finance.yahoo.com/quote/${item.symbol}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <span className="analysis-name">{item.name || item.symbol}</span>
+                      </a>
+                      <div className="bsf120-mobile-badge-stack">
+                        <span className={`pill ghost bsf120-upside-pill ${upsideClass}`}>
+                          {formatPercent(item.upside_pct)}
+                        </span>
+                        <small className="bsf120-mobile-reco-label">
+                          {recommendationLabel(item.recommendation_key)}
+                        </small>
+                      </div>
+                    </div>
+                    <div className="bsf120-mobile-subhead">
+                      <small className="analysis-symbol">{item.symbol}</small>
+                      <small className="analysis-symbol">
+                        {formatNumber(item.analyst_count, 0)} analysts
+                      </small>
+                    </div>
+                    <div className="bsf120-mobile-metrics">
+                      <div className="bsf120-mobile-metric bsf120-mobile-metric-pair">
+                        <div className="bsf120-mobile-line">
+                          <span>Price</span>
+                          <strong>{formatMoney(item.price, currency)}</strong>
+                        </div>
+                        <div className="bsf120-mobile-line">
+                          <span>Target mean</span>
+                          <strong>{formatMoney(item.target_mean_price, currency)}</strong>
+                        </div>
+                      </div>
+                      <div className="bsf120-mobile-metric bsf120-mobile-metric-pair">
+                        <div className="bsf120-mobile-line">
+                          <span>Low / High</span>
+                          <strong>
+                            {formatMoney(item.target_low_price, currency)} /{" "}
+                            {formatMoney(item.target_high_price, currency)}
+                          </strong>
+                        </div>
+                        <div className="bsf120-mobile-line">
+                          <span>Reco</span>
+                          <span className="bsf120-mobile-reco">
+                            <strong>{formatNumber(item.recommendation_mean)}</strong>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })
+            )}
+          </div>
 
           <div className="table analysis-table bsf120-table">
             <div className="table-head">
@@ -321,6 +464,14 @@ function Bsf120Analysis() {
           </div>
         </section>
       </main>
+      <ChatWidget
+        apiBase={CHAT_API_BASE}
+        lang={chatLang}
+        t={CHAT_TRANSLATOR}
+        toggleToken={chatToggleToken}
+        hideFab
+        onOpenChange={setChatOpen}
+      />
     </div>
   );
 }

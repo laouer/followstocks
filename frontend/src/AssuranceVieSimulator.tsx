@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
-import FloatingSidebar from "./FloatingSidebar";
+import ChatWidget from "./chat/ChatWidget";
+import PageAvatarMenu from "./PageAvatarMenu";
 
 const formatMoney = (value?: number | null, currency = "EUR") => {
   if (value === null || value === undefined) return "—";
@@ -79,7 +80,25 @@ const computeIrr = (cashFlows: number[]) => {
   return (low + high) / 2;
 };
 
+const CHAT_API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const CHAT_TRANSLATOR = (value: string) => {
+  if (value === "Hello, I can help with your portfolio analysis today.") {
+    return "Hello, I can help with assurance vie and investment simulation questions.";
+  }
+  if (value === "Ask a question") {
+    return "Ask a question about assurance vie";
+  }
+  return value;
+};
+const resolveChatLang = () => {
+  if (typeof navigator === "undefined" || !navigator.language) return "en";
+  return navigator.language.split("-")[0] || "en";
+};
+
 function AssuranceVieSimulator() {
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatToggleToken, setChatToggleToken] = useState(0);
+  const chatLang = resolveChatLang();
   const [form, setForm] = useState({
     initialInvestment: "10000",
     annualContribution: "1500",
@@ -309,7 +328,6 @@ function AssuranceVieSimulator() {
 
   return (
     <div className="page">
-      <FloatingSidebar />
       <main className="grid">
         <section className="card sim-card">
           <div className="card-header">
@@ -319,6 +337,12 @@ function AssuranceVieSimulator() {
               <p className="muted helper">
                 Modélisez les frais d'entrée, de gestion et de sortie avec vos hypothèses fiscales.
               </p>
+            </div>
+            <div className="card-actions">
+              <PageAvatarMenu
+                chatActive={chatOpen}
+                onChatToggle={() => setChatToggleToken((prev) => prev + 1)}
+              />
             </div>
           </div>
 
@@ -546,6 +570,14 @@ function AssuranceVieSimulator() {
           </div>
         </section>
       </main>
+      <ChatWidget
+        apiBase={CHAT_API_BASE}
+        lang={chatLang}
+        t={CHAT_TRANSLATOR}
+        toggleToken={chatToggleToken}
+        hideFab
+        onOpenChange={setChatOpen}
+      />
     </div>
   );
 }

@@ -101,7 +101,12 @@ const NAV_ITEMS = [
   },
 ];
 
-function FloatingSidebar() {
+type FloatingSidebarProps = {
+  onChatToggle?: () => void;
+  chatActive?: boolean;
+};
+
+function FloatingSidebar({ onChatToggle, chatActive = false }: FloatingSidebarProps) {
   const { pathname } = useLocation();
 
   return (
@@ -120,6 +125,28 @@ function FloatingSidebar() {
           </Link>
         );
       })}
+      {onChatToggle && (
+        <button
+          type="button"
+          className={`floating-nav-link floating-nav-chat-link${chatActive ? " active" : ""}`}
+          aria-label="Chat"
+          onClick={onChatToggle}
+        >
+          <span className="floating-nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M5 6h14v9H9l-4 4z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+          <span className="floating-nav-tooltip">Chat</span>
+        </button>
+      )}
     </nav>
   );
 }

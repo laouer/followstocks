@@ -330,3 +330,9 @@ body.chat-modal-open {
     bottom: 16px;
   }
 }
+
+@media (max-width: 700px) {
+  .chat-fab.mobile-nav-hidden {
+    display: none;
+  }
+}

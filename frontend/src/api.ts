@@ -97,6 +97,49 @@ export interface PortfolioResponse {
   yfinance_status?: YahooFinanceStatus | null;
 }
 
+export interface HoldingDailySnapshot {
+  id: number;
+  snapshot_date: string;
+  symbol: string;
+  name?: string | null;
+  currency: string;
+  shares: number;
+  close_price: number | null;
+  cost_total: number;
+  market_value: number | null;
+  gain_abs: number | null;
+  gain_pct: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PortfolioDailySnapshot {
+  id: number;
+  snapshot_date: string;
+  holdings_value: number;
+  placements_value: number;
+  liquidity_value: number;
+  total_cost: number;
+  total_value: number;
+  total_gain_abs: number;
+  total_gain_pct: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DailyHistoryResponse {
+  updated_at: string;
+  portfolio: PortfolioDailySnapshot[];
+  holdings: HoldingDailySnapshot[];
+}
+
+export interface DailyHistoryCaptureResult {
+  status: string;
+  snapshot_date: string;
+  holdings_saved: number;
+  portfolio_saved: number;
+}
+
 export interface BackupImportResult {
   accounts: number;
   holdings: number;
@@ -104,6 +147,8 @@ export interface BackupImportResult {
   cash_transactions: number;
   placements: number;
   placement_snapshots: number;
+  holding_daily_snapshots?: number;
+  portfolio_daily_snapshots?: number;
 }
 
 export interface HoldingSellResult {
@@ -237,6 +282,16 @@ export async function fetchBsf120Analysis(includeMissing = false) {
 
 export async function fetchPortfolio() {
   return api.get<PortfolioResponse>("/portfolio");
+}
+
+export async function fetchDailyHistory(params?: { days?: number; symbol?: string }) {
+  return api.get<DailyHistoryResponse>("/history/daily", { params });
+}
+
+export async function captureDailyHistory(payload?: { snapshot_date?: string }) {
+  return api.post<DailyHistoryCaptureResult>("/history/daily/capture", undefined, {
+    params: payload,
+  });
 }
 
 export async function fetchAccounts() {

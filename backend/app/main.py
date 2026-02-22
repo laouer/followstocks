@@ -338,11 +338,40 @@ async def _load_sbf120_snapshot() -> tuple[list[dict], datetime]:
         cached_items = _sbf120_cache.get("items") or []
         return cached_items, cached_at
 
+    try:
+        with SessionLocal() as db:
+            persisted = crud.get_latest_bsf120_forecast_snapshot(db)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("SBF120 DB read failed: %s", exc)
+        persisted = None
+
+    if persisted:
+        persisted_items, persisted_at = persisted
+        if (now - persisted_at).total_seconds() < SBF120_CACHE_TTL_SECONDS:
+            _sbf120_cache["timestamp"] = persisted_at
+            _sbf120_cache["items"] = persisted_items
+            return persisted_items, persisted_at
+
     async with _sbf120_cache_lock:
+        now = datetime.utcnow()
         cached_at = _sbf120_cache.get("timestamp")
         if cached_at and (now - cached_at).total_seconds() < SBF120_CACHE_TTL_SECONDS:
             cached_items = _sbf120_cache.get("items") or []
             return cached_items, cached_at
+
+        try:
+            with SessionLocal() as db:
+                persisted = crud.get_latest_bsf120_forecast_snapshot(db)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("SBF120 DB read failed under lock: %s", exc)
+            persisted = None
+
+        if persisted:
+            persisted_items, persisted_at = persisted
+            if (now - persisted_at).total_seconds() < SBF120_CACHE_TTL_SECONDS:
+                _sbf120_cache["timestamp"] = persisted_at
+                _sbf120_cache["items"] = persisted_items
+                return persisted_items, persisted_at
 
         tickers = build_sbf120_tickers()
         semaphore = asyncio.Semaphore(6)
@@ -354,6 +383,11 @@ async def _load_sbf120_snapshot() -> tuple[list[dict], datetime]:
                 )
 
         items = await asyncio.gather(*[_runner(entry) for entry in tickers])
+        try:
+            with SessionLocal() as db:
+                crud.save_bsf120_forecast_snapshot(db, items, snapshot_at=now)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("SBF120 DB save failed: %s", exc)
         _sbf120_cache["timestamp"] = now
         _sbf120_cache["items"] = items
         return items, now
@@ -537,14 +571,35 @@ async def _refresh_grouped_holdings(
 
 async def refresh_holdings_prices_once() -> None:
     with SessionLocal() as db:
-        holdings = db.query(models.Holding).all()
-
-        if not holdings:
-            log.info("Auto-refresh: no holdings to refresh.")
+        user_ids = [row[0] for row in db.query(models.User.id).all()]
+        if not user_ids:
+            log.info("Auto-refresh: no users to refresh.")
             return
 
-        grouped = _group_holdings_by_tracker(holdings)
-        await _refresh_grouped_holdings(db, grouped)
+        holdings = db.query(models.Holding).all()
+
+        if holdings:
+            grouped = _group_holdings_by_tracker(holdings)
+            await _refresh_grouped_holdings(db, grouped)
+        else:
+            log.info("Auto-refresh: no holdings to refresh, capturing portfolio snapshots only.")
+
+        captured_portfolio = 0
+        captured_holdings = 0
+        for user_id in user_ids:
+            try:
+                holdings_saved, portfolio_saved = crud.capture_daily_history(db, user_id)
+                captured_holdings += holdings_saved
+                captured_portfolio += portfolio_saved
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                log.warning("Auto-refresh: failed to capture daily history for user %s: %s", user_id, exc)
+        if captured_portfolio:
+            log.info(
+                "Auto-refresh: updated daily history (%d portfolio rows, %d holding rows)",
+                captured_portfolio,
+                captured_holdings,
+            )
 
 
 async def auto_refresh_loop():
@@ -589,6 +644,11 @@ app.add_middleware(
     allow_credentials=not CORS_ALLOW_ALL_ORIGINS,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+)
+log.info(
+    "CORS configured with allow_all=%s origins=%s",
+    CORS_ALLOW_ALL_ORIGINS,
+    CORS_ALLOW_ORIGINS,
 )
 
 
@@ -1206,6 +1266,16 @@ def export_backup(
         .filter(models.Placement.user_id == current_user.id)
         .all()
     )
+    holding_daily_snapshots = (
+        db.query(models.HoldingDailySnapshot)
+        .filter(models.HoldingDailySnapshot.user_id == current_user.id)
+        .all()
+    )
+    portfolio_daily_snapshots = (
+        db.query(models.PortfolioDailySnapshot)
+        .filter(models.PortfolioDailySnapshot.user_id == current_user.id)
+        .all()
+    )
     payload = schemas.BackupPayload(
         exported_at=datetime.utcnow(),
         accounts=[schemas.BackupAccount.model_validate(account) for account in accounts],
@@ -1221,6 +1291,14 @@ def export_backup(
         placement_snapshots=[
             schemas.BackupPlacementSnapshot.model_validate(snapshot)
             for snapshot in placement_snapshots
+        ],
+        holding_daily_snapshots=[
+            schemas.BackupHoldingDailySnapshot.model_validate(snapshot)
+            for snapshot in holding_daily_snapshots
+        ],
+        portfolio_daily_snapshots=[
+            schemas.BackupPortfolioDailySnapshot.model_validate(snapshot)
+            for snapshot in portfolio_daily_snapshots
         ],
     )
     filename = f"backup-{datetime.utcnow().strftime('%Y%m%d')}.json"
@@ -1284,6 +1362,12 @@ async def import_backup(
         models.PlacementSnapshot.placement_id.in_(
             db.query(models.Placement.id).filter(models.Placement.user_id == current_user.id)
         )
+    ).delete(synchronize_session=False)
+    db.query(models.HoldingDailySnapshot).filter(
+        models.HoldingDailySnapshot.user_id == current_user.id
+    ).delete(synchronize_session=False)
+    db.query(models.PortfolioDailySnapshot).filter(
+        models.PortfolioDailySnapshot.user_id == current_user.id
     ).delete(synchronize_session=False)
     db.query(models.Placement).filter(models.Placement.user_id == current_user.id).delete(
         synchronize_session=False
@@ -1446,6 +1530,42 @@ async def import_backup(
             )
         )
 
+    for snapshot in payload.holding_daily_snapshots:
+        db.add(
+            models.HoldingDailySnapshot(
+                user_id=current_user.id,
+                snapshot_date=snapshot.snapshot_date,
+                symbol=snapshot.symbol,
+                name=snapshot.name,
+                currency=snapshot.currency,
+                shares=snapshot.shares,
+                close_price=snapshot.close_price,
+                cost_total=snapshot.cost_total,
+                market_value=snapshot.market_value,
+                gain_abs=snapshot.gain_abs,
+                gain_pct=snapshot.gain_pct,
+                created_at=snapshot.created_at,
+                updated_at=snapshot.updated_at,
+            )
+        )
+
+    for snapshot in payload.portfolio_daily_snapshots:
+        db.add(
+            models.PortfolioDailySnapshot(
+                user_id=current_user.id,
+                snapshot_date=snapshot.snapshot_date,
+                holdings_value=snapshot.holdings_value,
+                placements_value=snapshot.placements_value,
+                liquidity_value=snapshot.liquidity_value,
+                total_cost=snapshot.total_cost,
+                total_value=snapshot.total_value,
+                total_gain_abs=snapshot.total_gain_abs,
+                total_gain_pct=snapshot.total_gain_pct,
+                created_at=snapshot.created_at,
+                updated_at=snapshot.updated_at,
+            )
+        )
+
     db.commit()
 
     return schemas.BackupImportResult(
@@ -1455,6 +1575,8 @@ async def import_backup(
         cash_transactions=len(payload.cash_transactions),
         placements=len(payload.placements),
         placement_snapshots=len(payload.placement_snapshots),
+        holding_daily_snapshots=len(payload.holding_daily_snapshots),
+        portfolio_daily_snapshots=len(payload.portfolio_daily_snapshots),
     )
 
 
@@ -1546,7 +1668,58 @@ def add_price(
     if not holding:
         raise HTTPException(status_code=404, detail="Holding not found")
     updated = crud.add_price_snapshot(db, holding, snapshot)
+    try:
+        snapshot_day = snapshot.recorded_at.date() if snapshot.recorded_at else None
+        crud.capture_daily_history(db, current_user.id, snapshot_day)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log.warning("Failed to capture daily history after manual price update: %s", exc)
     return crud.build_holding_stats(db, updated)
+
+
+@app.post("/history/daily/capture", response_model=schemas.DailyHistoryCaptureResult)
+def capture_daily_history(
+    snapshot_date: date | None = Query(None, description="Snapshot day (YYYY-MM-DD), defaults to today"),
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    try:
+        holdings_saved, portfolio_saved = crud.capture_daily_history(
+            db,
+            current_user.id,
+            snapshot_date=snapshot_date,
+        )
+        return schemas.DailyHistoryCaptureResult(
+            status="ok",
+            snapshot_date=snapshot_date or date.today(),
+            holdings_saved=holdings_saved,
+            portfolio_saved=portfolio_saved,
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to capture daily history") from exc
+
+
+@app.get("/history/daily", response_model=schemas.DailyHistoryResponse)
+def get_daily_history(
+    days: int = Query(90, ge=7, le=1095, description="How many days to return"),
+    symbol: str | None = Query(None, description="Optional stock symbol filter"),
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    clean_symbol = symbol.upper().strip() if symbol else None
+    portfolio_rows = crud.get_portfolio_daily_snapshots(db, current_user.id, days=days)
+    holding_rows = crud.get_holding_daily_snapshots(
+        db,
+        current_user.id,
+        days=days,
+        symbol=clean_symbol,
+    )
+    return schemas.DailyHistoryResponse(
+        updated_at=datetime.utcnow(),
+        portfolio=portfolio_rows,
+        holdings=holding_rows,
+    )
 
 
 @app.get("/portfolio", response_model=schemas.PortfolioResponse)

@@ -52,6 +52,7 @@ COPY backend/ /app/backend/
 # Copy built frontend assets
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 COPY docker/start.sh /app/start.sh
+COPY docker/spa_server.py /app/spa_server.py
 RUN chmod +x /app/start.sh
 
 EXPOSE 8000 4173

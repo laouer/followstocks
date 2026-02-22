@@ -2,6 +2,7 @@
 Configuration constants and environment variables for the FollowStocks application.
 """
 import os
+import re
 from typing import Any
 
 # Environment variables
@@ -14,10 +15,26 @@ _raw_cors_allow_origins = os.getenv(
     "CORS_ALLOW_ORIGINS",
     "http://localhost:5173,http://localhost:4173",
 )
-CORS_ALLOW_ORIGINS = [
-    origin.strip() for origin in _raw_cors_allow_origins.split(",") if origin.strip()
-]
-CORS_ALLOW_ALL_ORIGINS = CORS_ALLOW_ORIGINS == ["*"]
+
+
+def _parse_cors_allow_origins(raw_value: str) -> list[str]:
+    """
+    Parse origins from comma/newline/space-separated values and normalize them.
+    """
+    entries = [part.strip() for part in re.split(r"[\s,]+", raw_value or "") if part.strip()]
+    normalized: list[str] = []
+    for origin in entries:
+        if origin == "*":
+            normalized.append(origin)
+            continue
+        normalized.append(origin.rstrip("/"))
+    if not normalized:
+        return ["http://localhost:5173", "http://localhost:4173"]
+    return normalized
+
+
+CORS_ALLOW_ORIGINS = _parse_cors_allow_origins(_raw_cors_allow_origins)
+CORS_ALLOW_ALL_ORIGINS = "*" in CORS_ALLOW_ORIGINS
 
 # Price tracker constants
 PRICE_TRACKER_YAHOO = "yahoo"

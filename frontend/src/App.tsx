@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from "react";
-import Highcharts from "highcharts";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from "react";
+import Highcharts from "highcharts/highstock";
 import HighchartsDrilldown from "highcharts/modules/drilldown";
 import HighchartsReact from "highcharts-react-official";
-import FloatingSidebar from "./FloatingSidebar";
+import { useNavigate } from "react-router-dom";
 import ChatWidget from "./chat/ChatWidget";
 import {
   PortfolioResponse,
+  DailyHistoryResponse,
   HoldingStats,
   Placement,
   PlacementSnapshot,
@@ -18,6 +19,7 @@ import {
   clearAuthToken,
   getStoredAuthToken,
   fetchPortfolio,
+  fetchDailyHistory,
   exportBackupJson,
   importBackupJson,
   createAccount,
@@ -211,6 +213,7 @@ const PLACEMENT_TYPE_OPTIONS = ["Assurance vie", "Livret A", "LDD", "Compte a te
 const LOSS_COLOR = "#fb7185";
 const YFINANCE_WARNING_FALLBACK =
   "Last prices are not updated because Yahoo Finance is unreachable (connection lost or blocked).";
+const HISTORY_DAY_OPTIONS = [30, 90, 180, 365];
 
 const formatPercent = (value?: number | null) => {
   if (value === null || value === undefined) return "—";
@@ -284,7 +287,11 @@ const getInitials = (email?: string | null) => {
 };
 
 function App() {
+  const navigate = useNavigate();
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
+  const [dailyHistory, setDailyHistory] = useState<DailyHistoryResponse | null>(null);
+  const [dailyHistoryLoading, setDailyHistoryLoading] = useState(false);
+  const [dailyHistoryDays, setDailyHistoryDays] = useState(180);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [authToken, setAuthToken] = useState<string | null>(() => getStoredAuthToken());
@@ -323,6 +330,8 @@ function App() {
     kind: "idle",
   });
   const chatLang = resolveChatLang();
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatToggleToken, setChatToggleToken] = useState(0);
 
   useEffect(() => {
     if (status.kind === "success" || status.kind === "error") {
@@ -349,10 +358,11 @@ function App() {
   const [accountSortDir, setAccountSortDir] = useState<"asc" | "desc">("asc");
   const [fxRates, setFxRates] = useState<Record<string, number>>({});
   const DISPLAY_CURRENCY = "EUR";
-  const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | null>(null);
+  const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | "history" | null>(null);
   const [allocationChartType, setAllocationChartType] = useState<"donut" | "bar">("donut");
   const [plChartType, setPlChartType] = useState<"donut" | "bar">("bar");
   const [chartGroupBy, setChartGroupBy] = useState<ChartGroupBy>("holding");
+  const [summaryChartView, setSummaryChartView] = useState<"history" | "portfolio">("history");
   const [accountForm, setAccountForm] = useState({
     name: "",
     account_type: "",
@@ -600,6 +610,7 @@ function App() {
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
   const placements = useMemo(() => portfolio?.placements ?? [], [portfolio]);
   const accounts = useMemo<Account[]>(() => portfolio?.accounts ?? [], [portfolio]);
+  const portfolioHistoryRows = useMemo(() => dailyHistory?.portfolio ?? [], [dailyHistory]);
   const accountsById = useMemo(
     () => new Map(accounts.map((account) => [account.id, account])),
     [accounts]
@@ -2388,6 +2399,202 @@ const computeAnnualizedReturnBetween = (
     };
   }, [plData, totalCurrency]);
 
+  const portfolioEvolutionSeries = useMemo(() => {
+    const rows = [...portfolioHistoryRows].sort((a, b) => {
+      const aTime = Date.parse(`${a.snapshot_date}T00:00:00Z`);
+      const bTime = Date.parse(`${b.snapshot_date}T00:00:00Z`);
+      return aTime - bTime;
+    });
+
+    const totalValue: Array<[number, number]> = [];
+    const portfolioCosts: Array<[number, number]> = [];
+    rows.forEach((row) => {
+      const timestamp = Date.parse(`${row.snapshot_date}T00:00:00Z`);
+      if (Number.isNaN(timestamp)) return;
+      const trackedPortfolioValue = (row.holdings_value ?? 0) + (row.placements_value ?? 0);
+      totalValue.push([timestamp, Number(trackedPortfolioValue.toFixed(2))]);
+      if (row.total_cost !== null && row.total_cost !== undefined) {
+        portfolioCosts.push([timestamp, Number(row.total_cost.toFixed(2))]);
+      }
+    });
+
+    return { totalValue, portfolioCosts };
+  }, [portfolioHistoryRows]);
+
+  const portfolioEvolutionStockOptions = useMemo<Highcharts.Options>(() => {
+    const hasData = portfolioEvolutionSeries.totalValue.length > 0;
+    const formatKValue = (rawValue: number) => {
+      const valueK = (Number(rawValue) || 0) / 1000;
+      const absValueK = Math.abs(valueK);
+      const maxDigits = absValueK >= 100 ? 0 : absValueK >= 10 ? 1 : 2;
+      return `${valueK.toLocaleString("fr-FR", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: maxDigits,
+      })} k€`;
+    };
+    const lastPortfolioValue = hasData
+      ? portfolioEvolutionSeries.totalValue[portfolioEvolutionSeries.totalValue.length - 1]?.[1]
+      : null;
+    return {
+      chart: {
+        backgroundColor: "transparent",
+        height: 360,
+      },
+      title: { text: null },
+      credits: { enabled: false },
+      legend: {
+        enabled: true,
+        itemStyle: { color: "#e9ecf4", fontWeight: "500", fontSize: "11px" },
+      },
+      rangeSelector: {
+        selected: 0,
+        inputEnabled: false,
+        buttonTheme: {
+          fill: "rgba(255, 255, 255, 0.06)",
+          stroke: "rgba(255, 255, 255, 0.1)",
+          r: 8,
+          style: { color: "#cbd5f5" },
+          states: {
+            select: {
+              fill: "rgba(14, 165, 233, 0.2)",
+              style: { color: "#e9ecf4" },
+            },
+          },
+        },
+        labelStyle: { color: "#9fb0d4" },
+      },
+      navigator: {
+        enabled: hasData,
+        maskFill: "rgba(14, 165, 233, 0.14)",
+        series: {
+          type: "areaspline",
+          color: "rgba(56, 189, 248, 0.6)",
+          fillOpacity: 0.15,
+          lineWidth: 1,
+        },
+        xAxis: {
+          labels: { style: { color: "#9fb0d4" } },
+        },
+      },
+      scrollbar: {
+        enabled: hasData,
+        barBackgroundColor: "rgba(255, 255, 255, 0.12)",
+        barBorderColor: "rgba(255, 255, 255, 0.18)",
+        buttonBackgroundColor: "rgba(255, 255, 255, 0.12)",
+        buttonBorderColor: "rgba(255, 255, 255, 0.18)",
+        rifleColor: "#9fb0d4",
+        trackBackgroundColor: "rgba(255, 255, 255, 0.04)",
+        trackBorderColor: "rgba(255, 255, 255, 0.12)",
+      },
+      xAxis: {
+        type: "datetime",
+        lineColor: "rgba(255, 255, 255, 0.12)",
+        tickColor: "rgba(255, 255, 255, 0.12)",
+        labels: {
+          style: { color: "#9fb0d4" },
+        },
+      },
+      yAxis: {
+        opposite: false,
+        startOnTick: false,
+        endOnTick: false,
+        minPadding: 0.02,
+        maxPadding: 0.05,
+        title: { text: null },
+        gridLineColor: "rgba(255, 255, 255, 0.08)",
+        labels: {
+          style: { color: "#9fb0d4", fontSize: "11px" },
+          formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+            return formatKValue(Number(this.value) || 0);
+          },
+        },
+        plotLines:
+          lastPortfolioValue !== null && lastPortfolioValue !== undefined
+            ? [
+                {
+                  value: lastPortfolioValue,
+                  color: "rgba(34, 197, 94, 0.5)",
+                  width: 1,
+                  dashStyle: "ShortDot",
+                  zIndex: 4,
+                  label: {
+                    text: formatKValue(lastPortfolioValue),
+                    align: "left",
+                    x: 6,
+                    y: 4,
+                    style: {
+                      color: "#4ade80",
+                      fontSize: "11px",
+                      fontWeight: "700",
+                      textOutline: "none",
+                    },
+                  },
+                },
+              ]
+            : [],
+      },
+      tooltip: {
+        shared: true,
+        useHTML: true,
+        backgroundColor: "rgba(12, 18, 36, 0.95)",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        style: { color: "#e9ecf4" },
+        xDateFormat: "%e %b %Y",
+        pointFormatter: function (this: Highcharts.Point) {
+          const value = formatMoney(this.y as number, totalCurrency);
+          return `<span style="color:${this.color}">●</span> ${
+            this.series.name
+          }: <strong>${value}</strong><br/>`;
+        },
+      },
+      plotOptions: {
+        series: {
+          dataGrouping: {
+            enabled: false,
+          },
+        },
+      },
+      series: hasData
+        ? [
+            {
+              type: "areaspline",
+              name: "Portfolio value",
+              data: portfolioEvolutionSeries.totalValue,
+              color: "#38bdf8",
+              fillColor: {
+                linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
+                stops: [
+                  [0, "rgba(56, 189, 248, 0.32)"],
+                  [0.6, "rgba(56, 189, 248, 0.14)"],
+                  [1, "rgba(56, 189, 248, 0.02)"],
+                ],
+              },
+              threshold: null,
+              softThreshold: false,
+              lineWidth: 2.2,
+              marker: { enabled: false },
+              tooltip: { valueDecimals: 2 },
+            },
+            ...(portfolioEvolutionSeries.portfolioCosts.length
+              ? [
+                  {
+                    type: "line",
+                    name: "Portfolio costs",
+                    data: portfolioEvolutionSeries.portfolioCosts,
+                    color: "#94a3b8",
+                    dashStyle: "ShortDash",
+                    lineWidth: 1.8,
+                    visible: false,
+                    marker: { enabled: false },
+                    tooltip: { valueDecimals: 2 },
+                  } as Highcharts.SeriesLineOptions,
+                ]
+              : []),
+          ]
+        : [],
+    };
+  }, [portfolioEvolutionSeries, totalCurrency]);
+
   const allocationChartOptions =
     allocationChartType === "donut" ? allocationOptions : allocationBarOptions;
   const allocationToggleLabel =
@@ -2718,6 +2925,29 @@ const computeAnnualizedReturnBetween = (
     return <span className={`sort-arrow ${isActive ? "active" : "inactive"}`}>{arrow}</span>;
   };
 
+  const loadDailyHistory = useCallback(async () => {
+    const token = authToken || getStoredAuthToken();
+    if (!token) {
+      setDailyHistory(null);
+      setDailyHistoryLoading(false);
+      return;
+    }
+    setDailyHistoryLoading(true);
+    try {
+      const res = await fetchDailyHistory({
+        days: dailyHistoryDays,
+      });
+      setDailyHistory(res.data);
+    } catch (err) {
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        "Failed to load daily history";
+      setStatus({ kind: "error", message: detail });
+    } finally {
+      setDailyHistoryLoading(false);
+    }
+  }, [authToken, dailyHistoryDays]);
+
   const loadPortfolio = async () => {
     const token = authToken || getStoredAuthToken();
     if (!token) {
@@ -2728,6 +2958,7 @@ const computeAnnualizedReturnBetween = (
     try {
       const res = await fetchPortfolio();
       setPortfolio(res.data);
+      void loadDailyHistory();
       if (!shareEditForm.holdingId && res.data.holdings.length > 0) {
         setShareEditForm({
           holdingId: String(res.data.holdings[0].id),
@@ -3051,6 +3282,15 @@ const computeAnnualizedReturnBetween = (
       cancelled = true;
     };
   }, [authToken]);
+
+  useEffect(() => {
+    if (!authToken) {
+      setDailyHistory(null);
+      setDailyHistoryLoading(false);
+      return;
+    }
+    loadDailyHistory();
+  }, [authToken, dailyHistoryDays, loadDailyHistory]);
 
   useEffect(() => {
     if (!authToken) {
@@ -3593,7 +3833,10 @@ const computeAnnualizedReturnBetween = (
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      setStatus({ kind: "success", message: "Backup exported." });
+      setStatus({
+        kind: "success",
+        message: "Backup exported (including history snapshots).",
+      });
     } catch (err) {
       setStatus({ kind: "error", message: "Failed to export backup" });
     }
@@ -3618,6 +3861,7 @@ const computeAnnualizedReturnBetween = (
     try {
       await refreshHoldingsPrices();
       await loadPortfolio();
+      await loadDailyHistory();
       setStatus({ kind: "success", message: "Prices updated." });
     } catch (err) {
       const detail =
@@ -3642,6 +3886,8 @@ const computeAnnualizedReturnBetween = (
         cash_transactions,
         placements = 0,
         placement_snapshots = 0,
+        holding_daily_snapshots = 0,
+        portfolio_daily_snapshots = 0,
       } = res.data;
       const parts = [
         `${accounts} account${accounts === 1 ? "" : "s"}`,
@@ -3650,6 +3896,12 @@ const computeAnnualizedReturnBetween = (
         `${cash_transactions} cash transaction${cash_transactions === 1 ? "" : "s"}`,
         `${placements} placement${placements === 1 ? "" : "s"}`,
         `${placement_snapshots} placement snapshot${placement_snapshots === 1 ? "" : "s"}`,
+        `${holding_daily_snapshots} holding history snapshot${
+          holding_daily_snapshots === 1 ? "" : "s"
+        }`,
+        `${portfolio_daily_snapshots} portfolio history snapshot${
+          portfolio_daily_snapshots === 1 ? "" : "s"
+        }`,
       ];
       setStatus({
         kind: "success",
@@ -4088,8 +4340,6 @@ const computeAnnualizedReturnBetween = (
 
   return (
     <div className="page">
-      <FloatingSidebar />
-
       <main className="grid">
         {!isAuthed ? (
           <>
@@ -4263,6 +4513,162 @@ const computeAnnualizedReturnBetween = (
                         <button
                           type="button"
                           className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            navigate("/");
+                          }}
+                        >
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M12 3v9l7.5 7.5A9 9 0 1 1 12 3z"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                <path
+                                  d="M12 3a9 9 0 0 1 9 9h-9z"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Portfolio</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            navigate("/simulate/assurance-vie");
+                          }}
+                        >
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M12 3l7 4v5c0 4.5-3.1 8.4-7 9.7-3.9-1.3-7-5.2-7-9.7V7l7-4z"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                <path
+                                  d="M9.5 12.5l2 2 3.5-3.5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Assurance vie</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            navigate("/simulate/compte-a-terme");
+                          }}
+                        >
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <rect
+                                  x="3"
+                                  y="4"
+                                  width="18"
+                                  height="17"
+                                  rx="2"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                />
+                                <path
+                                  d="M8 2v4M16 2v4M3 9h18"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Compte a terme</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="user-menu-item"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            navigate("/analysis/bsf120");
+                          }}
+                        >
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M4 19h16M5 16l4-5 3 3 5-7"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                                <path
+                                  d="M15 7h2.5V9.5"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>BSF120</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`user-menu-item ${chatOpen ? "active" : ""}`.trim()}
+                          aria-pressed={chatOpen}
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            setChatToggleToken((prev) => prev + 1);
+                          }}
+                        >
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M5 6h14v9H9l-4 4z"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Chat</span>
+                          </span>
+                        </button>
+                        <div className="user-menu-divider" />
+                        <button
+                          type="button"
+                          className="user-menu-item"
                           aria-pressed={isTourActive}
                           onClick={() => {
                             setIsUserMenuOpen(false);
@@ -4273,7 +4679,21 @@ const computeAnnualizedReturnBetween = (
                             }
                           }}
                         >
-                          {isTourActive ? "End tour" : "Start tour"}
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M12 3v18M3 12h18"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>{isTourActive ? "End tour" : "Start tour"}</span>
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -4283,7 +4703,21 @@ const computeAnnualizedReturnBetween = (
                             handleExportBackup();
                           }}
                         >
-                          Export Data
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M12 4v11M8 11l4 4 4-4M5 20h14"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Export Data</span>
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -4293,7 +4727,21 @@ const computeAnnualizedReturnBetween = (
                             backupInputRef.current?.click();
                           }}
                         >
-                          Import Data
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M12 20V9M8 13l4-4 4 4M5 4h14"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Import Data</span>
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -4303,7 +4751,21 @@ const computeAnnualizedReturnBetween = (
                             handleRunYahooTargets();
                           }}
                         >
-                          Run Yahoo targets
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M4 19h16M6 15l3-3 3 2 5-6"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Run Yahoo targets</span>
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -4313,7 +4775,21 @@ const computeAnnualizedReturnBetween = (
                             handleRefreshPrices();
                           }}
                         >
-                          Refresh prices
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M20 11a8 8 0 1 0 2 5.5M20 4v7h-7"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Refresh prices</span>
+                          </span>
                         </button>
                         <button
                           type="button"
@@ -4323,7 +4799,21 @@ const computeAnnualizedReturnBetween = (
                             handleLogout();
                           }}
                         >
-                          Log out
+                          <span className="user-menu-item-content">
+                            <span className="user-menu-item-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <path
+                                  d="M15 17l5-5-5-5M20 12H9M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <span>Log out</span>
+                          </span>
                         </button>
                       </div>
                     )}
@@ -4340,7 +4830,7 @@ const computeAnnualizedReturnBetween = (
               <div className="summary-content">
                 <div className="summary-grid">
                   <div className="stat">
-                    <p>Capital contributed</p>
+                    <p>Capital</p>
                     <h3>{displayMoney(selectedCapitalContributed, totalCurrency)}</h3>
                   </div>
                   <div className="stat">
@@ -4376,67 +4866,85 @@ const computeAnnualizedReturnBetween = (
                   </div>
                   
                 </div>
-                  <div className="summary-charts">
-                    <div className="summary-chart">
+                <div className="summary-charts-toolbar">
+                  <div className="summary-chart-view-toggle" role="group" aria-label="Chart view">
+                    <button
+                      type="button"
+                      className={`icon-button compact summary-chart-view-button ${
+                        summaryChartView === "history" ? "active" : ""
+                      }`}
+                      onClick={() => setSummaryChartView("history")}
+                      aria-pressed={summaryChartView === "history"}
+                      aria-label="Show history chart"
+                      title="History"
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                        <path
+                          d="M4 19h16M6 16l4-5l3 3l5-6"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <span className="summary-chart-view-label">History</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`icon-button compact summary-chart-view-button ${
+                        summaryChartView === "portfolio" ? "active" : ""
+                      }`}
+                      onClick={() => setSummaryChartView("portfolio")}
+                      aria-pressed={summaryChartView === "portfolio"}
+                      aria-label="Show portfolio charts"
+                      title="Portfolio and P/L"
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                        <path
+                          d="M12 3v8l6.4 3.7A9 9 0 1 1 12 3z"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <span className="summary-chart-view-label">Portfolio</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="summary-charts">
+                  {summaryChartView === "history" ? (
+                    <div className="summary-chart summary-chart-wide">
                       <div className="summary-chart-header">
-                        <p className="eyebrow">Allocation</p>
+                        <p className="eyebrow">History</p>
                         <div className="summary-chart-title">
-                          <h3>Portfolio mix</h3>
-                          {allocationChartType === "bar" && allocationData.total > 0 && (
-                            <span className="pill ghost">
-                              Total {formatMoney(allocationData.total, totalCurrency)}
-                            </span>
-                          )}
+                          <h3>Portfolio evolution</h3>
                         </div>
                         <p className="muted helper">
-                          Based on latest prices · Grouped by {chartGroupLabel.toLowerCase()}
+                          End-of-day values from your saved daily snapshots.
                         </p>
-                        <div className="chart-header-actions">
+                        <div className="chart-header-actions history-actions">
                           <label className="chart-group-label">
-                            Group by
+                            Window
                             <select
                               className="chart-select"
-                              value={chartGroupBy}
-                              onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                              value={dailyHistoryDays}
+                              onChange={(event) => setDailyHistoryDays(Number(event.target.value))}
                             >
-                              {CHART_GROUP_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
+                              {HISTORY_DAY_OPTIONS.map((days) => (
+                                <option key={days} value={days}>
+                                  {days}d
                                 </option>
                               ))}
                             </select>
                           </label>
                           <button
                             type="button"
-                            className="icon-button compact chart-toggle"
-                            onClick={() =>
-                              setAllocationChartType((prev) => (prev === "donut" ? "bar" : "donut"))
-                            }
-                            aria-label={allocationToggleLabel}
-                            title={allocationToggleLabel}
-                            aria-pressed={allocationChartType === "bar"}
-                          >
-                            {allocationChartType === "donut" ? (
-                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
-                                <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
-                                <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
-                              </svg>
-                            ) : (
-                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                <path
-                                  d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
-                                  fill="currentColor"
-                                  fillRule="evenodd"
-                                />
-                              </svg>
-                            )}
-                          </button>
-                          <button
-                            type="button"
                             className="icon-button compact zoom-button"
-                            onClick={() => setZoomedChart("allocation")}
-                            aria-label="Expand allocation chart"
+                            onClick={() => setZoomedChart("history")}
+                            aria-label="Expand history chart"
                           >
                             🔍
                           </button>
@@ -4445,86 +4953,170 @@ const computeAnnualizedReturnBetween = (
                       <div className="chart-wrapper">
                         <HighchartsReact
                           highcharts={Highcharts}
-                          options={allocationChartOptions}
-                      />
-                    </div>
-                    {(!allocationData.points.length || !allocationData.total) && (
-                      <p className="muted helper">{allocationEmptyMessage}</p>
-                    )}
-                    </div>
-
-                    <div className="summary-chart">
-                      <div className="summary-chart-header">
-                        <p className="eyebrow">Performance</p>
-                        <div className="summary-chart-title">
-                          <h3>P/L mix</h3>
-                          {plChartType === "bar" && chartGainAbs !== null && chartGainAbs !== undefined && (
-                            <span className="pill ghost">
-                              Total {formatMoneySigned(chartGainAbs, totalCurrency)}
-                            </span>
-                          )}
-                        </div>
+                          constructorType="stockChart"
+                          options={portfolioEvolutionStockOptions}
+                        />
+                      </div>
+                      {dailyHistoryLoading && (
+                        <p className="muted helper">Loading history...</p>
+                      )}
+                      {portfolioHistoryRows.length === 0 && (
                         <p className="muted helper">
-                          Absolute gains vs losses by {chartGroupLabel.toLowerCase()}
+                          No history yet. Daily snapshots are captured automatically.
                         </p>
-                        <div className="chart-header-actions">
-                          <label className="chart-group-label">
-                            Group by
-                            <select
-                              className="chart-select"
-                              value={chartGroupBy}
-                              onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
-                            >
-                              {CHART_GROUP_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <button
-                            type="button"
-                            className="icon-button compact chart-toggle"
-                            onClick={() =>
-                              setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))
-                            }
-                            aria-label={plToggleLabel}
-                            title={plToggleLabel}
-                            aria-pressed={plChartType === "bar"}
-                          >
-                            {plChartType === "donut" ? (
-                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
-                                <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
-                                <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
-                              </svg>
-                            ) : (
-                              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                <path
-                                  d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
-                                  fill="currentColor"
-                                  fillRule="evenodd"
-                                />
-                              </svg>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="summary-chart">
+                        <div className="summary-chart-header">
+                          <p className="eyebrow">Allocation</p>
+                          <div className="summary-chart-title">
+                            <h3>Portfolio mix</h3>
+                            {allocationChartType === "bar" && allocationData.total > 0 && (
+                              <span className="pill ghost">
+                                Total {formatMoney(allocationData.total, totalCurrency)}
+                              </span>
                             )}
-                          </button>
-                          <button
-                            type="button"
-                            className="icon-button compact zoom-button"
-                            onClick={() => setZoomedChart("pl")}
-                            aria-label="Expand P/L chart"
-                          >
-                            🔍
-                          </button>
+                          </div>
+                          <p className="muted helper">
+                            Based on latest prices · Grouped by {chartGroupLabel.toLowerCase()}
+                          </p>
+                          <div className="chart-header-actions">
+                            <label className="chart-group-label">
+                              Group by
+                              <select
+                                className="chart-select"
+                                value={chartGroupBy}
+                                onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                              >
+                                {CHART_GROUP_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              className="icon-button compact chart-toggle"
+                              onClick={() =>
+                                setAllocationChartType((prev) =>
+                                  prev === "donut" ? "bar" : "donut"
+                                )
+                              }
+                              aria-label={allocationToggleLabel}
+                              title={allocationToggleLabel}
+                              aria-pressed={allocationChartType === "bar"}
+                            >
+                              {allocationChartType === "donut" ? (
+                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                  <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                                  <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                                  <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                                </svg>
+                              ) : (
+                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                  <path
+                                    d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                                    fill="currentColor"
+                                    fillRule="evenodd"
+                                  />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button compact zoom-button"
+                              onClick={() => setZoomedChart("allocation")}
+                              aria-label="Expand allocation chart"
+                            >
+                              🔍
+                            </button>
+                          </div>
                         </div>
+                        <div className="chart-wrapper">
+                          <HighchartsReact highcharts={Highcharts} options={allocationChartOptions} />
+                        </div>
+                        {(!allocationData.points.length || !allocationData.total) && (
+                          <p className="muted helper">{allocationEmptyMessage}</p>
+                        )}
                       </div>
-                      <div className="chart-wrapper">
-                        <HighchartsReact highcharts={Highcharts} options={plChartOptions} />
+
+                      <div className="summary-chart">
+                        <div className="summary-chart-header">
+                          <p className="eyebrow">Performance</p>
+                          <div className="summary-chart-title">
+                            <h3>P/L mix</h3>
+                            {plChartType === "bar" &&
+                              chartGainAbs !== null &&
+                              chartGainAbs !== undefined && (
+                                <span className="pill ghost">
+                                  Total {formatMoneySigned(chartGainAbs, totalCurrency)}
+                                </span>
+                              )}
+                          </div>
+                          <p className="muted helper">
+                            Absolute gains vs losses by {chartGroupLabel.toLowerCase()}
+                          </p>
+                          <div className="chart-header-actions">
+                            <label className="chart-group-label">
+                              Group by
+                              <select
+                                className="chart-select"
+                                value={chartGroupBy}
+                                onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                              >
+                                {CHART_GROUP_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              className="icon-button compact chart-toggle"
+                              onClick={() => setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))}
+                              aria-label={plToggleLabel}
+                              title={plToggleLabel}
+                              aria-pressed={plChartType === "bar"}
+                            >
+                              {plChartType === "donut" ? (
+                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                  <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                                  <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                                  <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+                                </svg>
+                              ) : (
+                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                  <path
+                                    d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                                    fill="currentColor"
+                                    fillRule="evenodd"
+                                  />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button compact zoom-button"
+                              onClick={() => setZoomedChart("pl")}
+                              aria-label="Expand P/L chart"
+                            >
+                              🔍
+                            </button>
+                          </div>
+                        </div>
+                        <div className="chart-wrapper">
+                          <HighchartsReact highcharts={Highcharts} options={plChartOptions} />
+                        </div>
+                        {(!plData.points.length || !plData.total) && (
+                          <p className="muted helper">{plEmptyMessage}</p>
+                        )}
                       </div>
-                    {(!plData.points.length || !plData.total) && (
-                      <p className="muted helper">{plEmptyMessage}</p>
-                    )}
-                  </div>
+                    </>
+                  )}
                 </div>
               </div>
             </section>
@@ -4624,7 +5216,7 @@ const computeAnnualizedReturnBetween = (
                         title="Capital contributed."
                         onClick={() => handleAccountSort("manual_invested")}
                       >
-                        Capital contributed {renderAccountSortIcon("manual_invested")}
+                        Capital {renderAccountSortIcon("manual_invested")}
                       </button>
                       <button
                         type="button"
@@ -4658,7 +5250,6 @@ const computeAnnualizedReturnBetween = (
                       >
                         Performance {renderAccountSortIcon("performance")}
                       </button>
-                      <span>Actions</span>
                     </div>
                     <div className="table-body">
                       {sortedAccounts.map((row) => {
@@ -4676,45 +5267,23 @@ const computeAnnualizedReturnBetween = (
                         const holdingsLabel = holdingsCount === 1 ? "holding" : "holdings";
                         const placementsLabel =
                           placementsCount === 1 ? "placement" : "placements";
+                        const holdingsBreakdown =
+                          holdingsCount > 0 && placementsCount > 0
+                            ? `${holdingsCount} ${holdingsLabel} · ${placementsCount} ${placementsLabel}`
+                            : holdingsCount > 0
+                              ? `${holdingsCount} ${holdingsLabel}`
+                              : placementsCount > 0
+                                ? `${placementsCount} ${placementsLabel}`
+                                : `0 ${holdingsLabel}`;
+                        const performanceClass =
+                          performance > 0 ? "positive" : performance < 0 ? "negative" : "";
                         return (
-                          <div className="table-row" key={account.id}>
-                            <span data-label="Name">{account.name}</span>
-                            <span data-label="Type">{account.account_type || "—"}</span>
-                            <span data-label="Capital contributed">
-                              {formatMoney(manualInvested, totalCurrency)}
+                          <article className="table-row account-row" key={account.id}>
+                            <span className="account-identity">
+                              <strong className="account-name">{account.name}</strong>
+                              <small className="account-type">{account.account_type || "—"}</small>
                             </span>
-                            <span data-label="Holdings allocation">
-                              {formatMoney(allocationValue, totalCurrency)}
-                              <small>
-                                {allocationPercent !== null
-                                  ? formatPercent(allocationPercent)
-                                  : "—"}
-                                {" · "}
-                                {holdingsCount} {holdingsLabel}
-                                {placementsCount > 0 && (
-                                  <>
-                                    {" · "}
-                                    {placementsCount} {placementsLabel}
-                                  </>
-                                )}
-                              </small>
-                            </span>
-                            <span data-label="Cash available">
-                              {formatMoney(account.liquidity, totalCurrency)}
-                            </span>
-                            <span data-label="Total">
-                              {formatMoney(totalValue, totalCurrency)}
-                            </span>
-                            <span
-                              data-label="Performance"
-                              className={
-                                performance > 0 ? "positive" : performance < 0 ? "negative" : ""
-                              }
-                            >
-                              {formatMoneySigned(performance, totalCurrency)}
-                              <small>{formatPercentSigned(performanceRatio)}</small>
-                            </span>
-                            <span className="account-actions" data-label="Actions">
+                            <span className="account-actions">
                               <button
                                 type="button"
                                 className="icon-button"
@@ -4757,62 +5326,133 @@ const computeAnnualizedReturnBetween = (
                             type="button"
                             className="icon-button"
                             aria-label={`Delete ${account.name}`}
-                            onClick={() => setAccountDeleteTarget(account)}
-                          >
-                            🗑️
-                          </button>
+                                onClick={() => setAccountDeleteTarget(account)}
+                              >
+                                🗑️
+                              </button>
                             </span>
-                          </div>
+                            <span className="account-metrics">
+                              <span className="account-metric account-core-values">
+                                <div className="account-core-line">
+                                  <span>Capital</span>
+                                  <strong>{formatMoney(manualInvested, totalCurrency)}</strong>
+                                </div>
+                                <div className="account-core-line">
+                                  <span>Cash</span>
+                                  <strong>{formatMoney(account.liquidity, totalCurrency)}</strong>
+                                </div>
+                                <div className="account-core-line">
+                                  <span>Total</span>
+                                  <strong>{formatMoney(totalValue, totalCurrency)}</strong>
+                                </div>
+                              </span>
+                              <span className="account-metric account-insight-values">
+                                <div className="account-insight-line">
+                                  <span>P/L</span>
+                                  <span className={`account-insight-value account-insight-pl ${performanceClass}`}>
+                                    <span className="account-insight-pl-amount">
+                                      {formatMoneySigned(performance, totalCurrency)}
+                                    </span>
+                                    {performanceRatio !== null && (
+                                      <span className="account-insight-pl-ratio">
+                                        ({formatPercentSigned(performanceRatio)})
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                                <div className="account-insight-line">
+                                  <span>Share</span>
+                                  <strong className="account-insight-value">
+                                    {allocationPercent !== null
+                                      ? formatPercent(allocationPercent)
+                                      : "—"}
+                                  </strong>
+                                </div>
+                                <div className="account-insight-line">
+                                  <span>Holdings</span>
+                                  <strong className="account-insight-value">
+                                    {holdingsBreakdown}
+                                  </strong>
+                                </div>
+                              </span>
+                            </span>
+                          </article>
                         );
                       })}
                       {accountsSummary && (
-                        <div className="table-row summary-row">
-                          <span data-label="Name" className="bold">TOTAL</span>
-                          <span data-label="Type"></span>
-                          <span data-label="Capital contributed">
-                            {formatMoney(accountsSummary.manualInvested, totalCurrency)}
+                        <article className="table-row account-row account-summary-row">
+                          <span className="account-identity">
+                            <strong className="account-name">TOTAL</strong>
+                            <small className="account-type">All accounts</small>
                           </span>
-                          <span data-label="Holdings allocation">
-                            {formatMoney(accountsSummary.allocationValue, totalCurrency)}
-                            <small>
-                              {accountsSummary.allocationPercent !== null
-                                ? formatPercent(accountsSummary.allocationPercent)
-                                : "—"}
-                              {" · "}
-                              {accountsSummary.holdingsCount}{" "}
-                              {accountsSummary.holdingsCount === 1 ? "holding" : "holdings"}
-                              {accountsSummary.placementsCount > 0 && (
-                                <>
-                                  {" · "}
-                                  {accountsSummary.placementsCount}{" "}
-                                  {accountsSummary.placementsCount === 1
-                                    ? "placement"
-                                    : "placements"}
-                                </>
-                              )}
-                            </small>
+                          <span className="account-actions account-actions-placeholder" aria-hidden="true" />
+                          <span className="account-metrics">
+                            <span className="account-metric">
+                              <span className="account-metric-label">Capital</span>
+                              <strong>{formatMoney(accountsSummary.manualInvested, totalCurrency)}</strong>
+                            </span>
+                            <span className="account-metric">
+                              <span className="account-metric-label">Allocation</span>
+                              <strong>{formatMoney(accountsSummary.allocationValue, totalCurrency)}</strong>
+                              <small>
+                                {accountsSummary.allocationPercent !== null
+                                  ? formatPercent(accountsSummary.allocationPercent)
+                                  : "—"}
+                              </small>
+                              <small>
+                                {accountsSummary.holdingsCount > 0 &&
+                                accountsSummary.placementsCount > 0
+                                  ? `${accountsSummary.holdingsCount} ${
+                                      accountsSummary.holdingsCount === 1
+                                        ? "holding"
+                                        : "holdings"
+                                    } · ${accountsSummary.placementsCount} ${
+                                      accountsSummary.placementsCount === 1
+                                        ? "placement"
+                                        : "placements"
+                                    }`
+                                  : accountsSummary.holdingsCount > 0
+                                    ? `${accountsSummary.holdingsCount} ${
+                                        accountsSummary.holdingsCount === 1
+                                          ? "holding"
+                                          : "holdings"
+                                      }`
+                                    : accountsSummary.placementsCount > 0
+                                      ? `${accountsSummary.placementsCount} ${
+                                          accountsSummary.placementsCount === 1
+                                            ? "placement"
+                                            : "placements"
+                                        }`
+                                      : "0 holdings"}
+                              </small>
+                            </span>
+                            <span className="account-metric">
+                              <span className="account-metric-label">Cash</span>
+                              <strong>{formatMoney(accountsSummary.liquidity, totalCurrency)}</strong>
+                            </span>
+                            <span className="account-metric">
+                              <span className="account-metric-label">Total</span>
+                              <strong>{formatMoney(accountsSummary.totalValue, totalCurrency)}</strong>
+                            </span>
+                            <span
+                              className={`account-metric account-performance ${
+                                accountsSummary.performance > 0
+                                  ? "positive"
+                                  : accountsSummary.performance < 0
+                                    ? "negative"
+                                    : ""
+                              }`}
+                            >
+                              <span className="account-metric-label">P/L</span>
+                              <strong>
+                                {formatMoneySigned(accountsSummary.performance, totalCurrency)}
+                              </strong>
+                              <small className="account-performance-ratio">
+                                {formatPercentSigned(accountsSummary.performanceRatio)}
+                              </small>
+                            </span>
                           </span>
-                          <span data-label="Cash available">
-                            {formatMoney(accountsSummary.liquidity, totalCurrency)}
-                          </span>
-                          <span data-label="Total">
-                            {formatMoney(accountsSummary.totalValue, totalCurrency)}
-                          </span>
-                          <span
-                            data-label="Performance"
-                            className={
-                              accountsSummary.performance > 0
-                                ? "positive"
-                                : accountsSummary.performance < 0
-                                  ? "negative"
-                                  : ""
-                            }
-                          >
-                            {formatMoneySigned(accountsSummary.performance, totalCurrency)}
-                            <small>{formatPercentSigned(accountsSummary.performanceRatio)}</small>
-                          </span>
-                          <span data-label="Actions"></span>
-                        </div>
+                        </article>
                       )}
                     </div>
                   </div>
@@ -4888,7 +5528,7 @@ const computeAnnualizedReturnBetween = (
           ) : filteredHoldings.length === 0 ? (
             <p className="empty">No holdings for the selected account.</p>
           ) : (
-            <div className="table">
+            <div className="table positions-table">
               <div className="table-head">
                 <button
                   type="button"
@@ -4968,6 +5608,7 @@ const computeAnnualizedReturnBetween = (
                     gainAbsNative !== undefined
                       ? formatMoney(gainAbsNative, holding.currency)
                       : null;
+                  const isUsdHolding = (holding.currency || "").toUpperCase() === "USD";
                   const isForeignCurrency =
                     holding.currency?.toUpperCase() !== DISPLAY_CURRENCY;
                   const fxRate = isForeignCurrency ? holding.fx_rate : null;
@@ -4983,6 +5624,10 @@ const computeAnnualizedReturnBetween = (
                     isForeignCurrency && costPerShareEur !== null && costPerShareEur !== undefined
                       ? formatMoney(holding.cost_basis, holding.currency)
                       : null;
+                  const showCostPerShareSecondary =
+                    costPerShareSecondary !== null &&
+                    costPerShareSecondary !== undefined &&
+                    !isUsdHolding;
                   const totalCostPrimary =
                     isForeignCurrency && costEur !== null && costEur !== undefined
                       ? formatMoney(costEur, DISPLAY_CURRENCY)
@@ -5011,75 +5656,128 @@ const computeAnnualizedReturnBetween = (
                       : gainSignSource >= 0
                         ? "positive"
                         : "negative";
+                  const analystProjectionPct =
+                    holding.yahoo_target_mean !== null &&
+                    holding.yahoo_target_mean !== undefined &&
+                    holding.last_price !== null &&
+                    holding.last_price !== undefined &&
+                    holding.last_price > 0
+                      ? (holding.yahoo_target_mean - holding.last_price) / holding.last_price
+                      : null;
+                  const analystProjectionArrow =
+                    analystProjectionPct === null || analystProjectionPct === undefined
+                      ? ""
+                      : analystProjectionPct >= 0
+                        ? "↗"
+                        : "↘";
+                  const hasGainBadge = gainPct !== null && gainPct !== undefined;
+                  const hasAnalystBadge =
+                    analystProjectionPct !== null && analystProjectionPct !== undefined;
                   return (
                     <div className="table-row position-row" key={holding.id}>
                       <span className="instrument-cell" data-label="Instrument">
-                        <div className="instrument-name-row">
-                          {instrumentHref ? (
-                            <a
-                              href={instrumentHref}
-                              className="name-link"
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              {instrumentName}
-                            </a>
-                          ) : (
-                            <span className="muted">{instrumentName}</span>
-                          )}
-                        </div>
-                        <small>
-                          {holding.symbol || "—"}
-                          {holding.asset_type ? ` · ${holding.asset_type}` : ""}
-                          {holding.sector ? ` · ${holding.sector}` : ""}
-                        </small>
-                      </span>
-                      <span className="position-value" data-label="Value / Last">
-                        <span className="position-value-primary">
-                          {valueDisplay.primary}
-                          {valueDisplay.secondary && <small> ({valueDisplay.secondary})</small>}
-                        </span>
-                        <span className="position-value-last">
-                          Last {lastPriceDisplay.primary}
-                          {lastPriceDisplay.secondary && (
-                            <small> ({lastPriceDisplay.secondary})</small>
-                          )}
-                        </span>
-                      </span>
-                      <span className="pl-cell position-pl" data-label="P/L">
-                        <span className={`pl-percent ${gainClass}`.trim()}>
-                          {formatPercentSigned(gainPct)}
-                        </span>
-                        <span className={`pl-amount ${gainClass}`.trim()}>{gainDisplayPrimary}</span>
-                        {gainDisplaySecondary && <small>{gainDisplaySecondary}</small>}
-                      </span>
-                      <span className="position-details" data-label="Cost Details">
-                        <span className="position-cost-primary">
-                          {totalCostPrimary}
-                          {totalCostSecondary && <small> ({totalCostSecondary})</small>}
-                        </span>
-                        <span className="position-cost-share">
-                          {costPerSharePrimary}
-                          <small> (# {holding.shares.toFixed(2)})</small>
-                          {costPerShareSecondary && <small> ({costPerShareSecondary})</small>}
-                        </span>
-                        {feeValue > 0 && (
-                          <span className="position-cost-fee">
-                            + {feePrimary}
-                            {feeSecondary && <small> ({feeSecondary})</small>}
+                        <div className="position-card-header">
+                          <div className="position-title-block">
+                            {instrumentHref ? (
+                              <a
+                                href={instrumentHref}
+                                className="name-link position-instrument-name"
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {instrumentName}
+                              </a>
+                            ) : (
+                              <span className="muted position-instrument-name">{instrumentName}</span>
+                            )}
+                            <small className="position-title-meta">
+                              {holding.asset_type ? ` ${holding.asset_type}` : ""}
+                              {holding.sector ? ` · ${holding.sector}` : ""}
+                            </small>
+                          </div>
+                          <span
+                            className={`position-header-badges ${
+                              hasGainBadge || hasAnalystBadge ? "" : "empty"
+                            }`.trim()}
+                          >
+                            {hasGainBadge && hasAnalystBadge ? (
+                              <span className="position-badges-stack">
+                                <span className={`position-pl-badge ${gainClass}`.trim()}>
+                                  {formatPercentSigned(gainPct)}
+                                </span>
+                                <span className="position-analyst-badge">
+                                  <span className="position-analyst-badge-arrow">
+                                    {analystProjectionArrow}
+                                  </span>
+                                  {formatPercentSigned(analystProjectionPct)}
+                                </span>
+                              </span>
+                            ) : hasGainBadge ? (
+                              <span className={`position-pl-badge ${gainClass}`.trim()}>
+                                {formatPercentSigned(gainPct)}
+                              </span>
+                            ) : hasAnalystBadge ? (
+                              <span className="position-analyst-badge">
+                                <span className="position-analyst-badge-arrow">
+                                  {analystProjectionArrow}
+                                </span>
+                                {formatPercentSigned(analystProjectionPct)}
+                              </span>
+                            ) : null}
                           </span>
-                        )}
+                          <span className="holding-actions" data-label="Actions">
+                            <button
+                              type="button"
+                              className="icon-button"
+                              aria-label={`Open actions for ${holding.symbol}`}
+                              title="View details and actions"
+                              onClick={() => setHoldingActionsTarget(holding)}
+                            >
+                              ⋯
+                            </button>
+                          </span>
+                        </div>
                       </span>
-                      <span className="holding-actions" data-label="Actions">
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`Open actions for ${holding.symbol}`}
-                          title="View details and actions"
-                          onClick={() => setHoldingActionsTarget(holding)}
-                        >
-                          ⋯
-                        </button>
+                      <span className="position-metrics">
+                        <span className="position-value">
+                          <span className="metric-label">Value</span>
+                          <span className="position-value-primary">
+                            {valueDisplay.primary}
+                            {valueDisplay.secondary && !isUsdHolding && (
+                              <small> ({valueDisplay.secondary})</small>
+                            )}
+                          </span>
+                          <span className="position-value-last">
+                            Last {lastPriceDisplay.primary}
+                            {lastPriceDisplay.secondary && !isUsdHolding && (
+                              <small> ({lastPriceDisplay.secondary})</small>
+                            )}
+                          </span>
+                        </span>
+                        <span className="position-details">
+                          <span className="metric-label">Cost (# {holding.shares.toFixed(2)})</span>
+                          <span className="position-cost-primary">
+                            {totalCostPrimary}
+                            {totalCostSecondary && !isUsdHolding && (
+                              <small> ({totalCostSecondary})</small>
+                            )}
+                          </span>
+                          <span className="position-cost-share">
+                            {costPerSharePrimary}
+                            {showCostPerShareSecondary && <small> ({costPerShareSecondary})</small>}
+                          </span>
+                          {feeValue > 0 && (
+                            <span className="position-cost-fee">
+                              + {feePrimary}
+                              {feeSecondary && !isUsdHolding && <small> ({feeSecondary})</small>}
+                            </span>
+                          )}
+                        </span>
+                        <span className="pl-cell position-pl">
+                          <span className="metric-label">P/L</span>
+                          <span className={`pl-amount ${gainClass}`.trim()}>{gainDisplayPrimary}</span>
+                          {gainDisplaySecondary && !isUsdHolding && <small>{gainDisplaySecondary}</small>}
+                        </span>
                       </span>
                     </div>
                   );
@@ -5119,34 +5817,16 @@ const computeAnnualizedReturnBetween = (
             <p className="empty">Add a placement to track manual values.</p>
           ) : (
             <div className="table placements-table">
-              <div className="table-head">
-                <span>Name</span>
-                <span>Account</span>
-                <span>Initial value (date)</span>
-                <span>Total interests</span>
-                <span>Total fees</span>
-                <span>Current value (date)</span>
-                <span>P/L</span>
-                <span>Actions</span>
-              </div>
               <div className="table-body">
                 {sortedPlacements.map((placement) => {
                   const placementCurrency = placement.currency || "EUR";
-                  const valueDisplay = renderAmount(
-                    placement.current_value,
-                    placementCurrency
-                  );
+                  const valueDisplay = renderAmount(placement.current_value, placementCurrency);
                   const initialValue = placement.initial_value;
                   const currentValue = placement.current_value;
                   const contributions = placement.total_contributions ?? 0;
-                  const withdrawals = placement.total_withdrawals ?? 0;
-                  const interestValue = placement.total_interests;
-                  const feeValue = placement.total_fees;
-                  const feeDisplayValue =
-                    feeValue !== null && feeValue !== undefined ? -feeValue : null;
                   const baseValue =
                     initialValue !== null && initialValue !== undefined
-                      ? initialValue + contributions - withdrawals
+                      ? initialValue + contributions
                       : null;
                   const plRaw =
                     baseValue !== null &&
@@ -5158,83 +5838,63 @@ const computeAnnualizedReturnBetween = (
                     plRaw !== null && baseValue !== null && baseValue > 0
                       ? plRaw / baseValue
                       : null;
-                  const annualRate = computeAnnualizedReturnBetween(
-                    rate,
-                    placement.initial_recorded_at,
-                    placement.last_snapshot_at
-                  );
-                  const interestDisplay = renderAmount(interestValue, placementCurrency);
-                  const feeDisplay = renderAmount(feeDisplayValue, placementCurrency);
-                  const initialDisplay = renderAmount(
-                    initialValue,
-                    placementCurrency
-                  );
+                  const contributedDisplay = renderAmount(baseValue, placementCurrency);
+                  const plDisplay = renderAmount(plRaw, placementCurrency);
                   const account =
                     placement.account_id !== null && placement.account_id !== undefined
                       ? accountsById.get(placement.account_id)
                       : null;
+                  const plClass =
+                    plRaw === null || plRaw === undefined
+                      ? ""
+                      : plRaw >= 0
+                        ? "positive"
+                        : "negative";
                   return (
-                    <div className="table-row" key={placement.id}>
-                      <span className="instrument-cell" data-label="Name">
-                        <span className="instrument-name-row">{placement.name}</span>
-                        <small>{placement.placement_type || "—"}</small>
+                    <div className="placement-row" key={placement.id}>
+                      <span className="instrument-cell">
+                        <span className="instrument-name-row">
+                          <span className="placement-instrument-name">{placement.name}</span>
+                          {rate !== null && rate !== undefined && (
+                            <span className={`position-pl-badge ${plClass}`.trim()}>
+                              {formatPercentSigned(rate)}
+                            </span>
+                          )}
+                        </span>
+                        <small>
+                          {placement.placement_type || "—"}
+                          {account?.name ? ` · ${account.name}` : ""}
+                        </small>
                       </span>
-                      <span data-label="Account">
-                        {account?.name || "—"}
-                        {account?.account_type && <small>{account.account_type}</small>}
+                      <span className="placement-metrics">
+                        <span className="placement-value">
+                          <span className="metric-label">Value</span>
+                          <span className="placement-value-primary">
+                            {valueDisplay.primary}
+                            {valueDisplay.secondary && <small> ({valueDisplay.secondary})</small>}
+                          </span>
+                          <span className="placement-value-date">
+                            {formatDate(placement.last_snapshot_at)}
+                          </span>
+                        </span>
+                        <span className="placement-initial">
+                          <span className="metric-label">Contributed</span>
+                          <span className="placement-initial-primary">
+                            {contributedDisplay.primary}
+                            {contributedDisplay.secondary && (
+                              <small> ({contributedDisplay.secondary})</small>
+                            )}
+                          </span>
+                        </span>
+                        <span className={`placement-pl ${plClass}`.trim()}>
+                          <span className="metric-label">P/L</span>
+                          <span className={`placement-pl-amount ${plClass}`.trim()}>
+                            {plDisplay.primary}
+                          </span>
+                          {plDisplay.secondary && <small>{plDisplay.secondary}</small>}
+                        </span>
                       </span>
-                      <span data-label="Initial value">
-                        {initialDisplay.primary}
-                        {initialDisplay.secondary && <small>{initialDisplay.secondary}</small>}
-                        <small>{formatDateTime(placement.initial_recorded_at)}</small>
-                      </span>
-                      <span
-                        data-label="Total interests"
-                        className={
-                          interestValue === null || interestValue === undefined || interestValue === 0
-                            ? ""
-                            : interestValue >= 0
-                              ? "positive"
-                              : "negative"
-                        }
-                      >
-                        {interestDisplay.primary}
-                        {interestDisplay.secondary && <small>{interestDisplay.secondary}</small>}
-                      </span>
-                      <span
-                        data-label="Total fees"
-                        className={
-                          feeDisplayValue === null ||
-                          feeDisplayValue === undefined ||
-                          feeDisplayValue === 0
-                            ? ""
-                            : feeDisplayValue > 0
-                              ? "positive"
-                              : "negative"
-                        }
-                      >
-                        {feeDisplay.primary}
-                        {feeDisplay.secondary && <small>{feeDisplay.secondary}</small>}
-                      </span>
-                      <span data-label="Current value">
-                        {valueDisplay.primary}
-                        {valueDisplay.secondary && <small>{valueDisplay.secondary}</small>}
-                        <small>{formatDateTime(placement.last_snapshot_at)}</small>
-                      </span>
-                      <span
-                        data-label="P/L"
-                        className={
-                          plRaw === null || plRaw === undefined
-                            ? ""
-                            : plRaw >= 0
-                              ? "positive"
-                              : "negative"
-                        }
-                      >
-                        {formatPercentSigned(rate)}
-                        <small>Ann. {formatPercentSigned(annualRate)}</small>
-                      </span>
-                      <span className="account-actions" data-label="Actions">
+                      <span className="account-actions placement-actions">
                         <button
                           type="button"
                           className="icon-button"
@@ -5297,7 +5957,14 @@ const computeAnnualizedReturnBetween = (
       </main>
 
       {isAuthed && (
-        <ChatWidget apiBase={CHAT_API_BASE} lang={chatLang} t={CHAT_TRANSLATOR} />
+        <ChatWidget
+          apiBase={CHAT_API_BASE}
+          lang={chatLang}
+          t={CHAT_TRANSLATOR}
+          toggleToken={chatToggleToken}
+          hideFab
+          onOpenChange={setChatOpen}
+        />
       )}
 
       {isTourActive && currentTourStep && (
@@ -6279,7 +6946,7 @@ const computeAnnualizedReturnBetween = (
                   <small className="muted">Cash available before contributions.</small>
                 </label>
                 <label>
-                  Capital contributed
+                  Capital
                   <input
                     type="number"
                     step="any"
@@ -6695,10 +7362,20 @@ const computeAnnualizedReturnBetween = (
           >
             <div className="symbol-modal-header chart-modal-header">
               <div>
-                <p className="eyebrow">{zoomedChart === "allocation" ? "Allocation" : "Performance"}</p>
+                <p className="eyebrow">
+                  {zoomedChart === "history"
+                    ? "History"
+                    : zoomedChart === "allocation"
+                      ? "Allocation"
+                      : "Performance"}
+                </p>
                 <div className="summary-chart-title">
                   <h3 id="zoom-chart-title">
-                    {zoomedChart === "allocation" ? "Portfolio mix" : "P/L mix"}
+                    {zoomedChart === "history"
+                      ? "Portfolio evolution"
+                      : zoomedChart === "allocation"
+                        ? "Portfolio mix"
+                        : "P/L mix"}
                   </h3>
                   {zoomedChart === "allocation" &&
                     allocationChartType === "bar" &&
@@ -6718,20 +7395,37 @@ const computeAnnualizedReturnBetween = (
                 </div>
               </div>
               <div className="chart-modal-actions">
-                <label className="chart-group-label">
-                  Group by
-                  <select
-                    className="chart-select"
-                    value={chartGroupBy}
-                    onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
-                  >
-                    {CHART_GROUP_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {zoomedChart === "history" ? (
+                  <label className="chart-group-label">
+                    Window
+                    <select
+                      className="chart-select"
+                      value={dailyHistoryDays}
+                      onChange={(event) => setDailyHistoryDays(Number(event.target.value))}
+                    >
+                      {HISTORY_DAY_OPTIONS.map((days) => (
+                        <option key={days} value={days}>
+                          {days}d
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  <label className="chart-group-label">
+                    Group by
+                    <select
+                      className="chart-select"
+                      value={chartGroupBy}
+                      onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+                    >
+                      {CHART_GROUP_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 {zoomedChart === "allocation" && (
                   <button
                     type="button"
@@ -6798,20 +7492,34 @@ const computeAnnualizedReturnBetween = (
               </div>
             </div>
             <div className="chart-wrapper large">
-              <HighchartsReact
-                highcharts={Highcharts}
-                options={{
-                  ...(zoomedChart === "allocation"
-                    ? allocationChartOptions
-                    : plChartOptions),
-                  chart: {
+              {zoomedChart === "history" ? (
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  constructorType="stockChart"
+                  options={{
+                    ...portfolioEvolutionStockOptions,
+                    chart: {
+                      ...portfolioEvolutionStockOptions.chart,
+                      height: 520,
+                    },
+                  }}
+                />
+              ) : (
+                <HighchartsReact
+                  highcharts={Highcharts}
+                  options={{
                     ...(zoomedChart === "allocation"
-                      ? allocationChartOptions.chart
-                      : plChartOptions.chart),
-                    height: 520,
-                  },
-                }}
-              />
+                      ? allocationChartOptions
+                      : plChartOptions),
+                    chart: {
+                      ...(zoomedChart === "allocation"
+                        ? allocationChartOptions.chart
+                        : plChartOptions.chart),
+                      height: 520,
+                    },
+                  }}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -7340,7 +8048,7 @@ const computeAnnualizedReturnBetween = (
             <div className="confirm-modal-body">
               <p className="confirm-warning">
                 Importing this backup will replace all your current data (accounts, holdings,
-                placements, transactions, and cash). This action is irreversible.
+                placements, transactions, cash, and history snapshots). This action is irreversible.
               </p>
               <div className="confirm-details">
                 <span className="pill ghost">File {backupImportTarget.name}</span>
