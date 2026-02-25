@@ -12,6 +12,7 @@ import {
   PlacementSnapshot,
   Account,
   AuthUser,
+  API_BASE,
   loginUser,
   registerUser,
   fetchCurrentUser,
@@ -121,7 +122,7 @@ type TourStep = {
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const BAR_VALUE_LABEL_ROTATION = -45;
-const CHAT_API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const CHAT_API_BASE = API_BASE;
 const CHAT_TRANSLATOR = (value: string) => value;
 const resolveChatLang = () => {
   if (typeof navigator === "undefined" || !navigator.language) return "en";
@@ -5739,21 +5740,6 @@ const computeAnnualizedReturnBetween = (
                         </div>
                       </span>
                       <span className="position-metrics">
-                        <span className="position-value">
-                          <span className="metric-label">Value</span>
-                          <span className="position-value-primary">
-                            {valueDisplay.primary}
-                            {valueDisplay.secondary && !isUsdHolding && (
-                              <small> ({valueDisplay.secondary})</small>
-                            )}
-                          </span>
-                          <span className="position-value-last">
-                            Last {lastPriceDisplay.primary}
-                            {lastPriceDisplay.secondary && !isUsdHolding && (
-                              <small> ({lastPriceDisplay.secondary})</small>
-                            )}
-                          </span>
-                        </span>
                         <span className="position-details">
                           <span className="metric-label">Cost (# {holding.shares.toFixed(2)})</span>
                           <span className="position-cost-primary">
@@ -5773,6 +5759,23 @@ const computeAnnualizedReturnBetween = (
                             </span>
                           )}
                         </span>
+                        
+                        <span className="position-value">
+                          <span className="metric-label">Value</span>
+                          <span className="position-value-primary">
+                            {valueDisplay.primary}
+                            {valueDisplay.secondary && !isUsdHolding && (
+                              <small> ({valueDisplay.secondary})</small>
+                            )}
+                          </span>
+                          <span className="position-value-last">
+                            Last {lastPriceDisplay.primary}
+                            {lastPriceDisplay.secondary && !isUsdHolding && (
+                              <small> ({lastPriceDisplay.secondary})</small>
+                            )}
+                          </span>
+                        </span>
+                        
                         <span className="pl-cell position-pl">
                           <span className="metric-label">P/L</span>
                           <span className={`pl-amount ${gainClass}`.trim()}>{gainDisplayPrimary}</span>

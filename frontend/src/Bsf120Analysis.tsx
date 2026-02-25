@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ChatWidget from "./chat/ChatWidget";
 import PageAvatarMenu from "./PageAvatarMenu";
-import { AnalystForecastItem, AnalystForecastResponse, fetchBsf120Analysis } from "./api";
+import { API_BASE, AnalystForecastItem, AnalystForecastResponse, fetchBsf120Analysis } from "./api";
 
 type Status = {
   kind: "idle" | "loading" | "success" | "error";
@@ -51,7 +51,7 @@ const recommendationLabel = (key?: string | null) => {
 
 const RECO_TOOLTIP =
   "Yahoo recommendation mean:\n1.0 = Strong Buy\n2.0 = Buy\n3.0 = Hold\n4.0 = Sell\n5.0 = Strong Sell\nLower is more bullish.";
-const CHAT_API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const CHAT_API_BASE = API_BASE;
 const CHAT_TRANSLATOR = (value: string) => {
   if (value === "Hello, I can help with your portfolio analysis today.") {
     return "Hello, I can help with BSF120 and investment questions.";

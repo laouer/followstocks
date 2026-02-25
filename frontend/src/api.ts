@@ -231,9 +231,10 @@ export interface AnalystForecastResponse {
 
 const AUTH_TOKEN_KEY = "followstocks_token";
 const runtimeApiBase = window.__FOLLOWSTOCKS_CONFIG__?.API_BASE_URL?.trim();
+export const API_BASE = runtimeApiBase || import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 const api = axios.create({
-  baseURL: runtimeApiBase || import.meta.env.VITE_API_BASE || "http://localhost:8000",
+  baseURL: API_BASE,
   timeout: 5000,
 });
 

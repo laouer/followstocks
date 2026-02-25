@@ -1859,17 +1859,113 @@ async def bsf120_analyst_forecasts(
 
 
 @app.post("/api/chat")
-async def chat_endpoint(payload: schemas.ChatRequest, db=Depends(db_session)):
+async def chat_endpoint(
+    payload: schemas.ChatRequest,
+    stream: bool = Query(
+        True,
+        description="When false, return a single JSON message instead of streaming chunks.",
+    ),
+    db=Depends(db_session),
+):
     """
     Stream a response from the LangGraph home agent (read-only SQL over the SQLite DB).
     """
 
     session_id = payload.session_id or str(uuid4())
+    language = (payload.language or "en").lower()
+    message_chars = len(payload.message or "")
+    mode = "stream" if stream else "sync"
+    log.info(
+        "chat %s request start session_id=%s language=%s message_chars=%s",
+        mode,
+        session_id,
+        language,
+        message_chars,
+    )
+
+    async def stream_with_logs():
+        chunk_count = 0
+        total_chars = 0
+        try:
+            async for chunk in chatbot.response_llm(
+                thread_id=session_id,
+                question=payload.message,
+                language=language,
+            ):
+                chunk_text = chunk if isinstance(chunk, str) else str(chunk)
+                chunk_count += 1
+                total_chars += len(chunk_text)
+                if chunk_count <= 3 or chunk_count % 10 == 0:
+                    log.info(
+                        "chat stream chunk session_id=%s chunk_index=%s chunk_chars=%s total_chars=%s",
+                        session_id,
+                        chunk_count,
+                        len(chunk_text),
+                        total_chars,
+                    )
+                yield chunk_text
+            log.info(
+                "chat stream request end session_id=%s chunks=%s total_chars=%s",
+                session_id,
+                chunk_count,
+                total_chars,
+            )
+        except asyncio.CancelledError:
+            log.warning(
+                "chat stream request cancelled session_id=%s chunks=%s total_chars=%s",
+                session_id,
+                chunk_count,
+                total_chars,
+            )
+            raise
+        except Exception:
+            log.exception(
+                "chat stream request failed session_id=%s chunks=%s total_chars=%s",
+                session_id,
+                chunk_count,
+                total_chars,
+            )
+            raise
+
+    if not stream:
+        message_parts: list[str] = []
+        chunk_count = 0
+        total_chars = 0
+        try:
+            async for chunk in chatbot.response_llm(
+                thread_id=session_id,
+                question=payload.message,
+                language=language,
+            ):
+                chunk_text = chunk if isinstance(chunk, str) else str(chunk)
+                message_parts.append(chunk_text)
+                chunk_count += 1
+                total_chars += len(chunk_text)
+            message = "".join(message_parts).strip()
+            log.info(
+                "chat sync request end session_id=%s chunks=%s total_chars=%s",
+                session_id,
+                chunk_count,
+                total_chars,
+            )
+            return JSONResponse(
+                {"session_id": session_id, "message": message},
+                headers={"Cache-Control": "no-cache, no-transform"},
+            )
+        except Exception:
+            log.exception(
+                "chat sync request failed session_id=%s chunks=%s total_chars=%s",
+                session_id,
+                chunk_count,
+                total_chars,
+            )
+            raise
+
     return StreamingResponse(
-        chatbot.response_llm(
-            thread_id=session_id,
-            question=payload.message,
-            language=(payload.language or "en").lower(),
-        ),
+        stream_with_logs(),
         media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
     )

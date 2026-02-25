@@ -96,18 +96,46 @@ export default function ChatWidget({
   const sendChatMessage = useCallback(async () => {
     if (!chatInput.trim()) return;
     const userMessage: ChatMessage = { role: "user", content: chatInput.trim() };
+    const requestPayload = {
+      session_id: chatSessionId,
+      message: userMessage.content,
+      language: lang,
+    };
+    const streamStartedAt = Date.now();
+    const streamUrl = `${apiBase}/api/chat`;
+    const streamPrefix = `[chat-stream][${chatSessionId}]`;
+    let assistantText = "";
+    const setAssistantMessage = (content: string) => {
+      setChatMessages((prev) => {
+        const updated = [...prev];
+        if (updated.length && updated[updated.length - 1]?.role === "assistant") {
+          updated[updated.length - 1] = { role: "assistant", content };
+        } else {
+          updated.push({ role: "assistant", content });
+        }
+        return updated;
+      });
+    };
     setChatMessages((prev) => [...prev, userMessage]);
     setChatInput("");
     setChatStreaming(true);
+    console.info(`${streamPrefix} request:start`, {
+      url: streamUrl,
+      lang,
+      messageChars: userMessage.content.length,
+    });
     try {
-      const response = await fetch(`${apiBase}/api/chat`, {
+      const response = await fetch(streamUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: chatSessionId,
-          message: userMessage.content,
-          language: lang,
-        }),
+        body: JSON.stringify(requestPayload),
+      });
+      console.info(`${streamPrefix} request:response`, {
+        status: response.status,
+        ok: response.ok,
+        contentType: response.headers.get("content-type"),
+        transferEncoding: response.headers.get("transfer-encoding"),
+        cacheControl: response.headers.get("cache-control"),
       });
       if (!response.ok) {
         throw new Error(`Chat backend error: ${response.status}`);
@@ -115,24 +143,85 @@ export default function ChatWidget({
       if (!response.body) throw new Error("No stream");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let assistantText = "";
+      let chunkCount = 0;
+      let totalBytes = 0;
       setChatMessages((prev) => [...prev, { role: "assistant", content: "" }]);
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        assistantText += decoder.decode(value, { stream: true });
-        setChatMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: "assistant", content: assistantText };
-          return updated;
-        });
+        if (done) {
+          console.info(`${streamPrefix} stream:end`, {
+            chunkCount,
+            totalBytes,
+            totalChars: assistantText.length,
+            elapsedMs: Date.now() - streamStartedAt,
+          });
+          break;
+        }
+        const chunkBytes = value?.byteLength || 0;
+        chunkCount += 1;
+        totalBytes += chunkBytes;
+        const chunkText = decoder.decode(value, { stream: true });
+        assistantText += chunkText;
+        if (chunkCount <= 3 || chunkCount % 20 === 0) {
+          console.debug(`${streamPrefix} stream:chunk`, {
+            chunkIndex: chunkCount,
+            chunkBytes,
+            totalBytes,
+            chunkChars: chunkText.length,
+            totalChars: assistantText.length,
+            preview: chunkText.slice(0, 80),
+          });
+        }
+        setAssistantMessage(assistantText);
       }
     } catch (err) {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: translator("Chatbot call failed") },
-      ]);
+      console.error(`${streamPrefix} stream:error`, err);
+      const errText =
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err || "unknown error");
+      const shouldFallbackToSync =
+        err instanceof TypeError ||
+        /ERR_HTTP2_PROTOCOL_ERROR|network error|failed to fetch/i.test(errText);
+
+      if (shouldFallbackToSync) {
+        const fallbackUrl = `${streamUrl}?stream=false`;
+        console.warn(`${streamPrefix} fallback:sync:start`, { fallbackUrl, reason: errText });
+        try {
+          const fallbackResponse = await fetch(fallbackUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestPayload),
+          });
+          console.info(`${streamPrefix} fallback:sync:response`, {
+            status: fallbackResponse.status,
+            ok: fallbackResponse.ok,
+            contentType: fallbackResponse.headers.get("content-type"),
+          });
+          if (fallbackResponse.ok) {
+            const fallbackJson = (await fallbackResponse.json()) as { message?: unknown };
+            const fallbackText =
+              typeof fallbackJson?.message === "string" ? fallbackJson.message.trim() : "";
+            if (fallbackText) {
+              setAssistantMessage(fallbackText);
+              console.info(`${streamPrefix} fallback:sync:success`, {
+                chars: fallbackText.length,
+              });
+              return;
+            }
+          }
+        } catch (fallbackErr) {
+          console.error(`${streamPrefix} fallback:sync:error`, fallbackErr);
+        }
+      }
+
+      if (assistantText) {
+        setAssistantMessage(assistantText);
+      } else {
+        setAssistantMessage(translator("Chatbot call failed"));
+      }
     } finally {
+      console.info(`${streamPrefix} stream:finish`, {
+        elapsedMs: Date.now() - streamStartedAt,
+      });
       setChatStreaming(false);
     }
   }, [apiBase, chatInput, chatSessionId, lang, translator]);

@@ -282,6 +282,7 @@ class ChatBot:
             model=llm_model,
             temperature=TEMPERATURE,
             max_tokens=1024,
+            streaming=True,
         )
 
         toolkit = SQLDatabaseToolkit(db=db, llm=exec_llm)
@@ -421,7 +422,7 @@ class ChatBot:
         # Reuse planner_llm or create a dedicated one
         llm = self.planner_llm.get(thread_id)
         if llm is None:
-            llm = ChatOpenAI(model=llm_model, temperature=0, streaming=False)
+            llm = ChatOpenAI(model=llm_model, temperature=0, streaming=True)
             self.planner_llm[thread_id] = llm
 
         router = self.router_prompt | llm.with_structured_output(
@@ -450,7 +451,7 @@ class ChatBot:
 
         if thread_id not in self.planner_llm:
             self.planner_llm[thread_id] = ChatOpenAI(
-                model=llm_model, temperature=0, streaming=False
+                model=llm_model, temperature=0, streaming=True
             )
 
         planner = (self.planner_prompt
@@ -492,15 +493,28 @@ class ChatBot:
 
         result = await self.sql_agent_executor.ainvoke({"input": question_for_agent}, config)
 
-        # AgentExecutor usually returns dict with "output"
+        # AgentExecutor may return a dict or an AgentFinish-like object depending on runtime versions.
         if isinstance(result, dict):
             output_text = (
                 result.get("output")
                 or result.get("final")
                 or result.get("text")
-                or str(result)
             )
         else:
+            output_text = None
+            return_values = getattr(result, "return_values", None)
+            if isinstance(return_values, dict):
+                output_text = (
+                    return_values.get("output")
+                    or return_values.get("final")
+                    or return_values.get("text")
+                )
+            if not output_text:
+                output_attr = getattr(result, "output", None)
+                if isinstance(output_attr, str) and output_attr.strip():
+                    output_text = output_attr
+
+        if not output_text:
             output_text = str(result)
 
         return {
@@ -519,7 +533,7 @@ class ChatBot:
 
         if thread_id not in self.replanner_llm:
             self.replanner_llm[thread_id] = ChatOpenAI(
-                model=llm_model, temperature=0, streaming=False
+                model=llm_model, temperature=0, streaming=True
             )
 
         replanner = self.replanner_prompt | self.replanner_llm[thread_id].with_structured_output(
@@ -621,18 +635,126 @@ class ChatBot:
 
             return None
 
+        def _extract_text(value: object) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+                return text or None
+            if isinstance(value, dict):
+                return (
+                    _extract_text(value.get("text"))
+                    or _extract_text(value.get("content"))
+                )
+            if isinstance(value, list):
+                parts: list[str] = []
+                for item in value:
+                    if isinstance(item, str):
+                        parts.append(item)
+                        continue
+                    if isinstance(item, dict):
+                        maybe_text = item.get("text")
+                        if not maybe_text:
+                            maybe_text = item.get("content")
+                        if maybe_text:
+                            parts.append(str(maybe_text))
+                joined = "".join(parts).strip()
+                return joined or None
+            return None
+
+        emitted_chunks = 0
+        stream_event_count = 0
+        observed_nodes: set[str] = set()
+        final_response: str | None = None
+        model_stream_active = False
+        model_stream_probe = ""
+        model_stream_blocked = False
+
         async for event in self.app.astream_events(initial_state, config, version="v2"):
-            # state_line = _format_state_event(event)
-            # if state_line:
-            #     yield state_line
-            # This streams the messages appended by nodes (execute_step + replanner)
-            if event["event"] == "on_chain_stream":
-                node = event["metadata"].get("langgraph_node")
-                # print(event)
-                if node in ["replanner", "router"]:
-                    chunk = event["data"]["chunk"]
-                    if isinstance(chunk, dict) and "messages" in chunk and chunk["messages"]:
-                        last_msg = chunk["messages"][-1]
-                        text = getattr(last_msg, "content", None)
-                        if text:
-                            yield text
+            event_type = event.get("event")
+            metadata = event.get("metadata") or {}
+            node = metadata.get("langgraph_node")
+            if node:
+                observed_nodes.add(node)
+
+            if event_type == "on_chat_model_stream":
+                if node not in {"replanner"}:
+                    continue
+                data = event.get("data") or {}
+                model_chunk = data.get("chunk") if isinstance(data, dict) else None
+                token_text: str | None = None
+                if model_chunk is not None:
+                    token_text = _extract_text(getattr(model_chunk, "content", None))
+                    if not token_text and isinstance(model_chunk, dict):
+                        token_text = _extract_text(
+                            model_chunk.get("content") or model_chunk.get("text")
+                        )
+                if token_text:
+                    if model_stream_blocked:
+                        continue
+                    model_stream_probe += token_text
+                    probe = model_stream_probe.lstrip()
+                    # Structured-output chunks start with JSON; don't stream that to end users.
+                    if probe and probe[0] in "{[":
+                        model_stream_blocked = True
+                        continue
+                    model_stream_active = True
+                    emitted_chunks += 1
+                    yield token_text
+                    continue
+
+            if event_type == "on_chain_stream":
+                if model_stream_active:
+                    continue
+                if node not in {"router", "replanner"}:
+                    continue
+                stream_event_count += 1
+                data = event.get("data") or {}
+                chunk = data.get("chunk") if isinstance(data, dict) else None
+                streamed_text: str | None = None
+
+                if isinstance(chunk, dict):
+                    streamed_text = _extract_text(chunk.get("response"))
+                    if not streamed_text:
+                        messages = chunk.get("messages")
+                        if isinstance(messages, list) and messages:
+                            last_msg = messages[-1]
+                            streamed_text = _extract_text(getattr(last_msg, "content", None))
+                elif chunk is not None:
+                    streamed_text = _extract_text(chunk)
+
+                if streamed_text:
+                    emitted_chunks += 1
+                    yield streamed_text
+                    continue
+
+            if event_type == "on_chain_end":
+                data = event.get("data") or {}
+                output = data.get("output") if isinstance(data, dict) else None
+                if isinstance(output, dict):
+                    maybe_final = _extract_text(output.get("response"))
+                    if maybe_final:
+                        final_response = maybe_final
+
+        if emitted_chunks == 0:
+            if final_response:
+                logger.info(
+                    "chatbot stream fallback thread_id=%s stream_events=%s nodes=%s chars=%s",
+                    thread_id,
+                    stream_event_count,
+                    ",".join(sorted(observed_nodes)),
+                    len(final_response),
+                )
+                yield final_response
+            else:
+                logger.warning(
+                    "chatbot stream empty thread_id=%s stream_events=%s nodes=%s",
+                    thread_id,
+                    stream_event_count,
+                    ",".join(sorted(observed_nodes)),
+                )
+                yield (
+                    "Desole, je n'ai pas pu generer une reponse pour le moment."
+                    if (language or "en").lower().startswith("fr")
+                    else "Sorry, I could not generate a response right now."
+                )

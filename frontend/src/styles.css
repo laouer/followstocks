@@ -1231,8 +1231,8 @@ g.highcharts-no-tooltip.highcharts-button.highcharts-breadcrumbs-button.highchar
 .positions-table .position-row .position-metrics {
   grid-area: metrics;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1.1fr);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1.15fr)  minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 1px;
 }
 
 .positions-table .position-row .position-metrics > span {
@@ -2364,7 +2364,10 @@ g.highcharts-axis-labels.highcharts-xaxis-labels > text {
   }
 
   .positions-table .table-head {
-    display: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
   }
 
   .placements-table .table-head {
@@ -2902,7 +2905,7 @@ g.highcharts-axis-labels.highcharts-xaxis-labels > text {
   }
 
   .positions-table .position-row .position-metrics {
-    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.2fr) minmax(0, 1.1fr);
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.95fr) minmax(0, 1.1fr);
   }
 
   .placements-table .placement-row .placement-metrics {

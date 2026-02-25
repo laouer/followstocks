@@ -3,6 +3,7 @@ import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
 import ChatWidget from "./chat/ChatWidget";
 import PageAvatarMenu from "./PageAvatarMenu";
+import { API_BASE } from "./api";
 
 const formatMoney = (value?: number | null, currency = "EUR") => {
   if (value === null || value === undefined) return "—";
@@ -80,7 +81,7 @@ const computeIrr = (cashFlows: number[]) => {
   return (low + high) / 2;
 };
 
-const CHAT_API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const CHAT_API_BASE = API_BASE;
 const CHAT_TRANSLATOR = (value: string) => {
   if (value === "Hello, I can help with your portfolio analysis today.") {
     return "Hello, I can help with assurance vie and investment simulation questions.";
