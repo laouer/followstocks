@@ -1552,6 +1552,7 @@ const computeAnnualizedReturnBetween = (
             y: Number(amount.toFixed(2)),
             currency: totalCurrency,
             isLoss: gainAbs < 0,
+            drilldown: undefined,
             detailCount: 1,
             detailLabel: "placement",
           };
@@ -1563,6 +1564,7 @@ const computeAnnualizedReturnBetween = (
         y: number;
         currency: string;
         isLoss: boolean;
+        drilldown?: string;
         detailCount?: number;
         detailLabel?: string;
       }>;
@@ -1868,8 +1870,8 @@ const computeAnnualizedReturnBetween = (
         backgroundColor: "rgba(12, 18, 36, 0.95)",
         borderColor: "rgba(255, 255, 255, 0.08)",
         style: { color: "#e9ecf4" },
-        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          const point = this.point as Highcharts.Point & { rawValue?: number };
+        formatter: function (this: Highcharts.Point) {
+          const point = this as Highcharts.Point & { rawValue?: number };
           const x = typeof point.x === "number" ? point.x : 0;
           const dateLabel = x ? new Date(x).toLocaleString() : "—";
           const primary = formatMoney(point.y as number, DISPLAY_CURRENCY);
@@ -1984,8 +1986,8 @@ const computeAnnualizedReturnBetween = (
         backgroundColor: "rgba(12, 18, 36, 0.95)",
         borderColor: "rgba(255, 255, 255, 0.08)",
         style: { color: "#e9ecf4" },
-        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          const point = this.point as Highcharts.Point & {
+        formatter: function (this: Highcharts.Point) {
+          const point = this as Highcharts.Point & {
             currency?: string;
             displayName?: string;
             isDummy?: boolean;
@@ -2028,8 +2030,8 @@ const computeAnnualizedReturnBetween = (
             style: { color: "#e9ecf4", textOutline: "none", fontWeight: "600", textTransform: "uppercase", fontSize: "12px", letterSpacing: "0.02em" },
             crop: false,
             overflow: "allow",
-            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
-              const point = this.point as Highcharts.Point & {
+            formatter: function (this: Highcharts.Point) {
+              const point = this as Highcharts.Point & {
                 options: Highcharts.PointOptionsObject & { currency?: string };
               };
               const currency =
@@ -2106,8 +2108,8 @@ const computeAnnualizedReturnBetween = (
         backgroundColor: "rgba(12, 18, 36, 0.95)",
         borderColor: "rgba(255, 255, 255, 0.08)",
         style: { color: "#e9ecf4" },
-        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          const point = this.point as Highcharts.Point;
+        formatter: function (this: Highcharts.Point) {
+          const point = this as Highcharts.Point;
           const options = point.options as Highcharts.PointOptionsObject & {
             currency?: string;
             displayName?: string;
@@ -2133,6 +2135,8 @@ const computeAnnualizedReturnBetween = (
       plotOptions: {
         bar: {
           borderWidth: 0,
+          groupPadding: 0.1,
+          pointPadding: 0.08,
           dataLabels: {
             enabled: hasData,
             style: {
@@ -2141,14 +2145,10 @@ const computeAnnualizedReturnBetween = (
               fontWeight: "600",
               fontSize: "11px",
             },
-            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
+            formatter: function (this: Highcharts.Point) {
               return formatMoney(this.y as number, totalCurrency);
             },
           },
-        },
-        series: {
-          groupPadding: 0.1,
-          pointPadding: 0.08,
         },
       },
       legend: { enabled: false },
@@ -2248,8 +2248,8 @@ const computeAnnualizedReturnBetween = (
         backgroundColor: "rgba(12, 18, 36, 0.95)",
         borderColor: "rgba(255, 255, 255, 0.08)",
         style: { color: "#e9ecf4" },
-        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          const point = this.point as Highcharts.Point & {
+        formatter: function (this: Highcharts.Point) {
+          const point = this as Highcharts.Point & {
             isLoss?: boolean;
             rawGain?: number;
           };
@@ -2288,8 +2288,8 @@ const computeAnnualizedReturnBetween = (
             style: { color: "#e9ecf4", textOutline: "none", fontWeight: "600", textTransform: "uppercase", fontSize: "12px", letterSpacing: "0.02em" },
             crop: false,
             overflow: "allow",
-            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
-              const point = this.point as Highcharts.Point;
+            formatter: function (this: Highcharts.Point) {
+              const point = this as Highcharts.Point;
               const options = point.options as Highcharts.PointOptionsObject & {
                 currency?: string;
                 rawGain?: number;
@@ -2389,8 +2389,8 @@ const computeAnnualizedReturnBetween = (
         backgroundColor: "rgba(12, 18, 36, 0.95)",
         borderColor: "rgba(255, 255, 255, 0.08)",
         style: { color: "#e9ecf4" },
-        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          const point = this.point as Highcharts.Point;
+        formatter: function (this: Highcharts.Point) {
+          const point = this as Highcharts.Point;
           const options = point.options as Highcharts.PointOptionsObject & {
             currency?: string;
             displayName?: string;
@@ -2418,6 +2418,8 @@ const computeAnnualizedReturnBetween = (
       plotOptions: {
         bar: {
           borderWidth: 0,
+          groupPadding: 0.1,
+          pointPadding: 0.08,
           dataLabels: {
             enabled: hasData,
             style: {
@@ -2426,8 +2428,8 @@ const computeAnnualizedReturnBetween = (
               fontWeight: "600",
               fontSize: "11px",
             },
-            formatter: function (this: Highcharts.DataLabelsFormatterContextObject) {
-              const point = this.point as Highcharts.Point;
+            formatter: function (this: Highcharts.Point) {
+              const point = this as Highcharts.Point;
               const options = point.options as Highcharts.PointOptionsObject & {
                 currency?: string;
                 rawGain?: number;
@@ -2437,10 +2439,6 @@ const computeAnnualizedReturnBetween = (
               return formatMoneySigned(rawGain, currency);
             },
           },
-        },
-        series: {
-          groupPadding: 0.1,
-          pointPadding: 0.08,
         },
       },
       legend: { enabled: false },
@@ -4377,9 +4375,9 @@ const computeAnnualizedReturnBetween = (
 
   const openCashModal = (account: Account, mode: "add" | "withdraw", reasonPreset?: string) => {
     setCashTargetAccount(account);
-    const options = CASH_REASON_OPTIONS[mode];
+    const options = CASH_REASON_OPTIONS[mode] as readonly string[];
     const safeReasonPreset =
-      reasonPreset && options.includes(reasonPreset as (typeof options)[number])
+      reasonPreset && options.includes(reasonPreset)
         ? reasonPreset
         : CASH_REASON_DEFAULT[mode];
     setCashForm({ amount: "", mode, reasonPreset: safeReasonPreset, reasonCustom: "" });
@@ -8284,7 +8282,7 @@ const computeAnnualizedReturnBetween = (
                     onChange={(e) =>
                       setCashForm((prev) => {
                         const mode = e.target.value as "add" | "withdraw";
-                        const options = CASH_REASON_OPTIONS[mode];
+                        const options = CASH_REASON_OPTIONS[mode] as readonly string[];
                         const defaultReason = CASH_REASON_DEFAULT[mode];
                         const shouldReplace =
                           !prev.reasonPreset || !options.includes(prev.reasonPreset);

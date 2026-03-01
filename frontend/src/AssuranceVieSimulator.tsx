@@ -279,15 +279,15 @@ function AssuranceVieSimulator() {
         backgroundColor: "rgba(12, 18, 36, 0.95)",
         borderColor: "rgba(255, 255, 255, 0.08)",
         style: { color: "#e9ecf4" },
-        formatter: function (this: Highcharts.TooltipFormatterContextObject) {
-          const points = this.points || [];
+        formatter: function (this: Highcharts.Point) {
+          const points = (this as Highcharts.Point & { points?: Highcharts.Point[] }).points || [];
           const lines = points.map((point) => {
             const value = formatMoney(point.y as number, "EUR");
             return `<span style="color:${point.color}">●</span> ${
               point.series.name
             }: <strong>${value}</strong>`;
           });
-          return `<strong>${this.x}</strong><br/>${lines.join("<br/>")}`;
+          return `<strong>${this.x as string | number}</strong><br/>${lines.join("<br/>")}`;
         },
       },
       plotOptions: {
