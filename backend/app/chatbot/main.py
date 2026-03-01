@@ -61,7 +61,7 @@ CHATBOT_DB_PATH = Path(__file__).resolve().parent / "chatbot.db"
 load_dotenv(override=True)
 logger = logging.getLogger(__name__)
 
-llm_model = os.getenv("OPENAI_MODEL", "azure.gpt-5.1")
+llm_model = os.getenv("OPENAI_MODEL", "openai.gpt-5.2")
 
 
 # langgraph-checkpoint-sqlite expects aiosqlite.Connection.is_alive (missing in 0.22.x)

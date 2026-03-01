@@ -215,6 +215,8 @@ const LOSS_COLOR = "#fb7185";
 const YFINANCE_WARNING_FALLBACK =
   "Last prices are not updated because Yahoo Finance is unreachable (connection lost or blocked).";
 const HISTORY_DAY_OPTIONS = [30, 90, 180, 365];
+const HISTORY_SERIES_GLOBAL = "global";
+const HISTORY_SERIES_PREFIX = "stock:";
 
 const formatPercent = (value?: number | null) => {
   if (value === null || value === undefined) return "—";
@@ -364,6 +366,7 @@ function App() {
   const [plChartType, setPlChartType] = useState<"donut" | "bar">("bar");
   const [chartGroupBy, setChartGroupBy] = useState<ChartGroupBy>("holding");
   const [summaryChartView, setSummaryChartView] = useState<"history" | "portfolio">("history");
+  const [historySeriesFilter, setHistorySeriesFilter] = useState(HISTORY_SERIES_GLOBAL);
   const [accountForm, setAccountForm] = useState({
     name: "",
     account_type: "",
@@ -612,6 +615,58 @@ function App() {
   const placements = useMemo(() => portfolio?.placements ?? [], [portfolio]);
   const accounts = useMemo<Account[]>(() => portfolio?.accounts ?? [], [portfolio]);
   const portfolioHistoryRows = useMemo(() => dailyHistory?.portfolio ?? [], [dailyHistory]);
+  const holdingHistoryRows = useMemo(() => dailyHistory?.holdings ?? [], [dailyHistory]);
+  const historySeriesFilterOptions = useMemo(() => {
+    const namesBySymbol = new Map<string, string>();
+    holdings.forEach((holding) => {
+      const symbol = (holding.symbol || "").trim().toUpperCase();
+      const name = (holding.name || "").trim();
+      if (symbol && name) namesBySymbol.set(symbol, name);
+    });
+    holdingHistoryRows.forEach((row) => {
+      const symbol = (row.symbol || "").trim().toUpperCase();
+      const name = (row.name || "").trim();
+      if (symbol && name && !namesBySymbol.has(symbol)) {
+        namesBySymbol.set(symbol, name);
+      }
+    });
+    const symbols = Array.from(
+      new Set(
+        holdingHistoryRows
+          .map((row) => (row.symbol || "").trim().toUpperCase())
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    return [
+      { value: HISTORY_SERIES_GLOBAL, label: "Global portfolio" },
+      ...symbols.map((symbol) => {
+        const name = namesBySymbol.get(symbol);
+        return {
+          value: `${HISTORY_SERIES_PREFIX}${symbol}`,
+          label: name ? `${symbol} · ${name}` : symbol,
+        };
+      }),
+    ];
+  }, [holdingHistoryRows, holdings]);
+  const selectedHistorySymbol = useMemo(() => {
+    if (!historySeriesFilter.startsWith(HISTORY_SERIES_PREFIX)) return null;
+    const symbol = historySeriesFilter.slice(HISTORY_SERIES_PREFIX.length).trim().toUpperCase();
+    return symbol || null;
+  }, [historySeriesFilter]);
+  const selectedHistoryFilterLabel = useMemo(
+    () =>
+      historySeriesFilterOptions.find((option) => option.value === historySeriesFilter)?.label ||
+      "Global portfolio",
+    [historySeriesFilter, historySeriesFilterOptions]
+  );
+  useEffect(() => {
+    const exists = historySeriesFilterOptions.some(
+      (option) => option.value === historySeriesFilter
+    );
+    if (!exists) {
+      setHistorySeriesFilter(HISTORY_SERIES_GLOBAL);
+    }
+  }, [historySeriesFilter, historySeriesFilterOptions]);
   const accountsById = useMemo(
     () => new Map(accounts.map((account) => [account.id, account])),
     [accounts]
@@ -2422,8 +2477,73 @@ const computeAnnualizedReturnBetween = (
     return { totalValue, portfolioCosts };
   }, [portfolioHistoryRows]);
 
+  const holdingEvolutionSeriesBySymbol = useMemo(() => {
+    const symbolBuckets = new Map<
+      string,
+      Map<number, { marketValue: number; costTotal: number }>
+    >();
+
+    holdingHistoryRows.forEach((row) => {
+      const symbol = (row.symbol || "").trim().toUpperCase();
+      if (!symbol) return;
+      const timestamp = Date.parse(`${row.snapshot_date}T00:00:00Z`);
+      if (Number.isNaN(timestamp)) return;
+      const marketRaw =
+        row.market_value ?? (row.close_price !== null && row.close_price !== undefined
+          ? row.close_price * row.shares
+          : null);
+      const marketValue = convertAmount(marketRaw, row.currency);
+      const costTotal = convertAmount(row.cost_total, row.currency);
+      if (
+        (marketValue === null || marketValue === undefined) &&
+        (costTotal === null || costTotal === undefined)
+      ) {
+        return;
+      }
+      const symbolSeries = symbolBuckets.get(symbol) || new Map<number, { marketValue: number; costTotal: number }>();
+      const existing = symbolSeries.get(timestamp) || { marketValue: 0, costTotal: 0 };
+      symbolSeries.set(timestamp, {
+        marketValue:
+          existing.marketValue + (marketValue !== null && marketValue !== undefined ? marketValue : 0),
+        costTotal:
+          existing.costTotal + (costTotal !== null && costTotal !== undefined ? costTotal : 0),
+      });
+      symbolBuckets.set(symbol, symbolSeries);
+    });
+
+    const result = new Map<string, { marketValue: Array<[number, number]>; costTotal: Array<[number, number]> }>();
+    symbolBuckets.forEach((series, symbol) => {
+      const sorted = Array.from(series.entries()).sort((a, b) => a[0] - b[0]);
+      const marketValue: Array<[number, number]> = [];
+      const costTotal: Array<[number, number]> = [];
+      sorted.forEach(([timestamp, values]) => {
+        marketValue.push([timestamp, Number(values.marketValue.toFixed(2))]);
+        costTotal.push([timestamp, Number(values.costTotal.toFixed(2))]);
+      });
+      result.set(symbol, { marketValue, costTotal });
+    });
+
+    return result;
+  }, [holdingHistoryRows, fxRates]);
+
   const portfolioEvolutionStockOptions = useMemo<Highcharts.Options>(() => {
-    const hasData = portfolioEvolutionSeries.totalValue.length > 0;
+    const isStockView = Boolean(selectedHistorySymbol);
+    const selectedStockSeries = selectedHistorySymbol
+      ? holdingEvolutionSeriesBySymbol.get(selectedHistorySymbol)
+      : null;
+    const valueSeries = isStockView
+      ? selectedStockSeries?.marketValue || []
+      : portfolioEvolutionSeries.totalValue;
+    const costSeries = isStockView
+      ? selectedStockSeries?.costTotal || []
+      : portfolioEvolutionSeries.portfolioCosts;
+    const valueSeriesName = isStockView
+      ? `${selectedHistorySymbol || "Stock"} value`
+      : "Portfolio value";
+    const costSeriesName = isStockView
+      ? `${selectedHistorySymbol || "Stock"} costs`
+      : "Portfolio costs";
+    const hasData = valueSeries.length > 0;
     const formatKValue = (rawValue: number) => {
       const valueK = (Number(rawValue) || 0) / 1000;
       const absValueK = Math.abs(valueK);
@@ -2433,9 +2553,7 @@ const computeAnnualizedReturnBetween = (
         maximumFractionDigits: maxDigits,
       })} k€`;
     };
-    const lastPortfolioValue = hasData
-      ? portfolioEvolutionSeries.totalValue[portfolioEvolutionSeries.totalValue.length - 1]?.[1]
-      : null;
+    const lastPortfolioValue = hasData ? valueSeries[valueSeries.length - 1]?.[1] : null;
     return {
       chart: {
         backgroundColor: "transparent",
@@ -2559,8 +2677,8 @@ const computeAnnualizedReturnBetween = (
         ? [
             {
               type: "areaspline",
-              name: "Portfolio value",
-              data: portfolioEvolutionSeries.totalValue,
+              name: valueSeriesName,
+              data: valueSeries,
               color: "#38bdf8",
               fillColor: {
                 linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
@@ -2576,12 +2694,12 @@ const computeAnnualizedReturnBetween = (
               marker: { enabled: false },
               tooltip: { valueDecimals: 2 },
             },
-            ...(portfolioEvolutionSeries.portfolioCosts.length
+            ...(costSeries.length
               ? [
                   {
                     type: "line",
-                    name: "Portfolio costs",
-                    data: portfolioEvolutionSeries.portfolioCosts,
+                    name: costSeriesName,
+                    data: costSeries,
                     color: "#94a3b8",
                     dashStyle: "ShortDash",
                     lineWidth: 1.8,
@@ -2594,7 +2712,16 @@ const computeAnnualizedReturnBetween = (
           ]
         : [],
     };
-  }, [portfolioEvolutionSeries, totalCurrency]);
+  }, [holdingEvolutionSeriesBySymbol, portfolioEvolutionSeries, selectedHistorySymbol, totalCurrency]);
+
+  const historyChartHasData = useMemo(() => {
+    if (!selectedHistorySymbol) return portfolioEvolutionSeries.totalValue.length > 0;
+    return (holdingEvolutionSeriesBySymbol.get(selectedHistorySymbol)?.marketValue.length || 0) > 0;
+  }, [holdingEvolutionSeriesBySymbol, portfolioEvolutionSeries, selectedHistorySymbol]);
+
+  const historyEmptyMessage = selectedHistorySymbol
+    ? `No history yet for ${selectedHistorySymbol} in this window.`
+    : "No history yet. Daily snapshots are captured automatically.";
 
   const allocationChartOptions =
     allocationChartType === "donut" ? allocationOptions : allocationBarOptions;
@@ -4921,12 +5048,31 @@ const computeAnnualizedReturnBetween = (
                       <div className="summary-chart-header">
                         <p className="eyebrow">History</p>
                         <div className="summary-chart-title">
-                          <h3>Portfolio evolution</h3>
+                          <h3>
+                            {selectedHistorySymbol
+                              ? `${selectedHistorySymbol} evolution`
+                              : "Portfolio evolution"}
+                          </h3>
                         </div>
                         <p className="muted helper">
-                          End-of-day values from your saved daily snapshots.
+                          End-of-day values from your saved daily snapshots. Filter:{" "}
+                          {selectedHistoryFilterLabel}.
                         </p>
                         <div className="chart-header-actions history-actions">
+                          <label className="chart-group-label">
+                            Filter
+                            <select
+                              className="chart-select"
+                              value={historySeriesFilter}
+                              onChange={(event) => setHistorySeriesFilter(event.target.value)}
+                            >
+                              {historySeriesFilterOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                           <label className="chart-group-label">
                             Window
                             <select
@@ -4961,9 +5107,9 @@ const computeAnnualizedReturnBetween = (
                       {dailyHistoryLoading && (
                         <p className="muted helper">Loading history...</p>
                       )}
-                      {portfolioHistoryRows.length === 0 && (
+                      {!dailyHistoryLoading && !historyChartHasData && (
                         <p className="muted helper">
-                          No history yet. Daily snapshots are captured automatically.
+                          {historyEmptyMessage}
                         </p>
                       )}
                     </div>
@@ -7375,7 +7521,9 @@ const computeAnnualizedReturnBetween = (
                 <div className="summary-chart-title">
                   <h3 id="zoom-chart-title">
                     {zoomedChart === "history"
-                      ? "Portfolio evolution"
+                      ? selectedHistorySymbol
+                        ? `${selectedHistorySymbol} evolution`
+                        : "Portfolio evolution"
                       : zoomedChart === "allocation"
                         ? "Portfolio mix"
                         : "P/L mix"}
@@ -7399,20 +7547,36 @@ const computeAnnualizedReturnBetween = (
               </div>
               <div className="chart-modal-actions">
                 {zoomedChart === "history" ? (
-                  <label className="chart-group-label">
-                    Window
-                    <select
-                      className="chart-select"
-                      value={dailyHistoryDays}
-                      onChange={(event) => setDailyHistoryDays(Number(event.target.value))}
-                    >
-                      {HISTORY_DAY_OPTIONS.map((days) => (
-                        <option key={days} value={days}>
-                          {days}d
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <>
+                    <label className="chart-group-label">
+                      Filter
+                      <select
+                        className="chart-select"
+                        value={historySeriesFilter}
+                        onChange={(event) => setHistorySeriesFilter(event.target.value)}
+                      >
+                        {historySeriesFilterOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="chart-group-label">
+                      Window
+                      <select
+                        className="chart-select"
+                        value={dailyHistoryDays}
+                        onChange={(event) => setDailyHistoryDays(Number(event.target.value))}
+                      >
+                        {HISTORY_DAY_OPTIONS.map((days) => (
+                          <option key={days} value={days}>
+                            {days}d
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
                 ) : (
                   <label className="chart-group-label">
                     Group by

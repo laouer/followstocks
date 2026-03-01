@@ -209,7 +209,7 @@ __marimo__/
 node_modules/
 .DS_Store
 data.db*
-chatbot.db
+chatbot.db*
 .python-version
 ios/
 scripts/
