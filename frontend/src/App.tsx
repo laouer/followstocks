@@ -1,9 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import Highcharts from "highcharts/highstock";
 import HighchartsDrilldown from "highcharts/modules/drilldown";
 import HighchartsReact from "highcharts-react-official";
 import { useNavigate } from "react-router-dom";
 import ChatWidget from "./chat/ChatWidget";
+import AccountsCard from "./portfolio/components/AccountsCard";
+import AuthCard from "./portfolio/components/AuthCard";
+import HoldingsCard from "./portfolio/components/HoldingsCard";
+import PlacementsCard from "./portfolio/components/PlacementsCard";
+import PortfolioHeaderMenu from "./portfolio/components/PortfolioHeaderMenu";
+import PortfolioValueDonutCard from "./portfolio/components/PortfolioValueDonutCard";
+import {
+  formatDate,
+  formatDateInput,
+  formatDateTime,
+  formatDateTimeLocal,
+  formatMoney,
+  formatMoneySigned,
+  formatPercent,
+  formatPercentSigned,
+  getInitials,
+  readAuthFormValues,
+} from "./portfolio/formatters";
 import {
   PortfolioResponse,
   DailyHistoryResponse,
@@ -45,6 +63,15 @@ import {
   runYahooTargetsAgent,
   refreshHoldingsPrices,
 } from "./api";
+import {
+  type AuthMode,
+  type ChartGroupBy,
+  type HelpTargetRect,
+  type SearchItem,
+  type Status,
+  type TourStep,
+} from "./portfolio/types";
+import { applyTheme, getStoredTheme, setThemePreference, type ThemeMode } from "./theme";
 
 const applyDrilldown =
   (HighchartsDrilldown as unknown as { default?: (hc: typeof Highcharts) => void })
@@ -52,73 +79,6 @@ const applyDrilldown =
 if (typeof applyDrilldown === "function") {
   applyDrilldown(Highcharts);
 }
-
-type Status = {
-  kind: "idle" | "loading" | "success" | "error";
-  message?: string;
-};
-
-type SearchItem = {
-  symbol: string;
-  name: string;
-  isin?: string;
-  mic?: string;
-  href?: string;
-  exchange?: string;
-  sector?: string;
-  industry?: string;
-  typeDisp?: string;
-  quoteType?: string;
-};
-
-type SortField =
-  | "instrument"
-  | "account"
-  | "acquired_at"
-  | "shares"
-  | "cost"
-  | "last_price"
-  | "value"
-  | "pl";
-type AccountSortField =
-  | "name"
-  | "type"
-  | "manual_invested"
-  | "holdings"
-  | "liquidity"
-  | "total"
-  | "performance";
-type AccountRow = {
-  account: Account;
-  holdingsValue: number;
-  placementsValue: number;
-  allocationValue: number;
-  allocationPercent: number | null;
-  totalValue: number;
-  holdingsCount: number;
-  placementsCount: number;
-  manualInvested: number;
-  performance: number;
-  performanceRatio: number | null;
-};
-type AuthMode = "login" | "register";
-type ChartGroupBy = "holding" | "account" | "asset_type" | "sector" | "industry";
-type HelpTargetRect = {
-  top: number;
-  left: number;
-  right: number;
-  bottom: number;
-  width: number;
-  height: number;
-};
-type TourStep = {
-  id: string;
-  title: string;
-  body: string;
-  targetRef: RefObject<HTMLElement>;
-  requiresAccountModal?: boolean;
-  requiresAddHoldingModal?: boolean;
-};
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const BAR_VALUE_LABEL_ROTATION = -45;
@@ -218,77 +178,6 @@ const HISTORY_DAY_OPTIONS = [30, 90, 180, 365];
 const HISTORY_SERIES_GLOBAL = "global";
 const HISTORY_SERIES_PREFIX = "stock:";
 
-const formatPercent = (value?: number | null) => {
-  if (value === null || value === undefined) return "—";
-  return `${(value * 100).toFixed(2)}%`;
-};
-
-const formatPercentSigned = (value?: number | null) => {
-  if (value === null || value === undefined) return "—";
-  const sign = value >= 0 ? "+" : "-";
-  return `${sign}${(Math.abs(value) * 100).toFixed(2)}%`;
-};
-
-const formatMoney = (value?: number | null, currency = "EUR") => {
-  if (value === null || value === undefined) return "—";
-  if (currency === "EUR") {
-    return `${value.toLocaleString("fr-FR", {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
-    })} €`;
-  }
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: currency || "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(value);
-};
-
-const formatMoneySigned = (value?: number | null, currency = "EUR") => {
-  if (value === null || value === undefined) return formatMoney(value, currency);
-  const sign = value >= 0 ? "+" : "-";
-  return `${sign}${formatMoney(Math.abs(value), currency)}`;
-};
-
-const formatDateTime = (value?: string | null) => {
-  if (!value) return "—";
-  return new Date(value).toLocaleString();
-};
-
-const formatDateTimeLocal = (value = new Date()) => {
-  const pad = (num: number) => String(num).padStart(2, "0");
-  const year = value.getFullYear();
-  const month = pad(value.getMonth() + 1);
-  const day = pad(value.getDate());
-  const hours = pad(value.getHours());
-  const minutes = pad(value.getMinutes());
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-};
-
-const formatDateInput = (value = new Date()) => {
-  const pad = (num: number) => String(num).padStart(2, "0");
-  const year = value.getFullYear();
-  const month = pad(value.getMonth() + 1);
-  const day = pad(value.getDate());
-  return `${year}-${month}-${day}`;
-};
-
-const formatDate = (value?: string | null) => {
-  if (!value) return "—";
-  return new Date(value).toLocaleDateString();
-};
-
-const getInitials = (email?: string | null) => {
-  const base = (email || "User").split("@")[0];
-  const parts = base.split(/[.\s_-]+/).filter(Boolean);
-  const initials = parts
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("");
-  return initials || "U";
-};
-
 function App() {
   const navigate = useNavigate();
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
@@ -300,7 +189,6 @@ function App() {
   const [authToken, setAuthToken] = useState<string | null>(() => getStoredAuthToken());
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
-  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
   const [authStatus, setAuthStatus] = useState<Status>({ kind: "idle" });
   const [holdingForm, setHoldingForm] = useState({
     symbol: "",
@@ -335,6 +223,7 @@ function App() {
   const chatLang = resolveChatLang();
   const [chatOpen, setChatOpen] = useState(false);
   const [chatToggleToken, setChatToggleToken] = useState(0);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredTheme());
 
   useEffect(() => {
     if (status.kind === "success" || status.kind === "error") {
@@ -346,6 +235,10 @@ function App() {
     return undefined;
   }, [status.kind, status.message]);
 
+  useEffect(() => {
+    applyTheme(themeMode);
+  }, [themeMode]);
+
   const [showSymbolModal, setShowSymbolModal] = useState(false);
   const [showAddHoldingModal, setShowAddHoldingModal] = useState(false);
   const [isTourActive, setIsTourActive] = useState(false);
@@ -355,10 +248,6 @@ function App() {
   const [editingHoldingId, setEditingHoldingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [openTooltipId, setOpenTooltipId] = useState<number | null>(null);
-  const [sortField, setSortField] = useState<SortField>("instrument");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [accountSortField, setAccountSortField] = useState<AccountSortField>("name");
-  const [accountSortDir, setAccountSortDir] = useState<"asc" | "desc">("asc");
   const [fxRates, setFxRates] = useState<Record<string, number>>({});
   const DISPLAY_CURRENCY = "EUR";
   const [zoomedChart, setZoomedChart] = useState<"allocation" | "pl" | "history" | null>(null);
@@ -376,7 +265,6 @@ function App() {
   });
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
-  const [showAccounts, setShowAccounts] = useState(false);
   const [accountDeleteTarget, setAccountDeleteTarget] = useState<Account | null>(null);
   const [cashTargetAccount, setCashTargetAccount] = useState<Account | null>(null);
   const [holdingActionsTarget, setHoldingActionsTarget] = useState<HoldingStats | null>(null);
@@ -464,10 +352,7 @@ function App() {
   const manualLastPriceInputRef = useRef<HTMLInputElement | null>(null);
   const manualLastPriceAtInputRef = useRef<HTMLInputElement | null>(null);
   const saveHoldingButtonRef = useRef<HTMLButtonElement | null>(null);
-  const backupInputRef = useRef<HTMLInputElement | null>(null);
-  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const yfinanceStatusRef = useRef<string | null>(null);
-  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [backupImportTarget, setBackupImportTarget] = useState<File | null>(null);
   const tourOpenedHoldingModalRef = useRef(false);
   const tourOpenedAccountModalRef = useRef(false);
@@ -599,18 +484,6 @@ function App() {
     },
   ];
 
-  useEffect(() => {
-    if (!isUserMenuOpen) return undefined;
-    const handleClickOutside = (event: MouseEvent) => {
-      if (!userMenuRef.current) return;
-      if (!userMenuRef.current.contains(event.target as Node)) {
-        setIsUserMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isUserMenuOpen]);
-
   const holdings = useMemo(() => portfolio?.holdings ?? [], [portfolio]);
   const placements = useMemo(() => portfolio?.placements ?? [], [portfolio]);
   const accounts = useMemo<Account[]>(() => portfolio?.accounts ?? [], [portfolio]);
@@ -722,6 +595,12 @@ function App() {
   const userDisplayEmail = currentUser?.email || "Signed in";
   const userInitials = getInitials(currentUser?.email);
   const currentTourStep = isTourActive ? tourSteps[tourStepIndex] : null;
+  const toggleThemeMode = useCallback(() => {
+    setThemeMode((prev) => {
+      const next: ThemeMode = prev === "dark" ? "light" : "dark";
+      return setThemePreference(next);
+    });
+  }, []);
 
   useEffect(() => {
     if (!placementHistoryTarget) {
@@ -1084,13 +963,6 @@ const computeAnnualizedReturnBetween = (
   const selectedLiquidity = useMemo(() => {
     if (!accounts.length) return null;
     return accounts.reduce((sum, account) => sum + (account.liquidity || 0), 0);
-  }, [accounts]);
-  const selectedCapitalContributed = useMemo(() => {
-    if (!accounts.length) return null;
-    return accounts.reduce(
-      (sum, account) => sum + (account.manual_invested || 0),
-      0
-    );
   }, [accounts]);
   const cashPreview = useMemo(() => {
     if (!cashTargetAccount) return null;
@@ -1941,7 +1813,8 @@ const computeAnnualizedReturnBetween = (
       chart: {
         type: "pie",
         backgroundColor: "transparent",
-        height: 300,
+        height: 270,
+        spacing: [0, 0, 0, 0],
         events: {
           drilldown: function (
             this: Highcharts.Chart,
@@ -2019,12 +1892,12 @@ const computeAnnualizedReturnBetween = (
       },
       plotOptions: {
         pie: {
-          innerSize: "65%",
-          size: "78%",
+          innerSize: "63%",
+          size: "79%",
           borderWidth: 0,
           dataLabels: {
             enabled: hasData,
-            distance: 12,
+            distance: 10,
             connectorColor: "rgba(255, 255, 255, 0.35)",
             connectorWidth: 1.2,
             style: { color: "#e9ecf4", textOutline: "none", fontWeight: "600", textTransform: "uppercase", fontSize: "12px", letterSpacing: "0.02em" },
@@ -2047,7 +1920,7 @@ const computeAnnualizedReturnBetween = (
         },
       },
       legend: {
-        enabled: true,
+        enabled: false,
         itemStyle: { color: "#e9ecf4", fontWeight: "500" },
       },
       credits: { enabled: false },
@@ -2720,6 +2593,63 @@ const computeAnnualizedReturnBetween = (
   const historyEmptyMessage = selectedHistorySymbol
     ? `No history yet for ${selectedHistorySymbol} in this window.`
     : "No history yet. Daily snapshots are captured automatically.";
+  const latentVariationPct = useMemo(() => {
+    const rows = portfolioHistoryRows
+      .map((row) => ({
+        timestamp: Date.parse(`${row.snapshot_date}T00:00:00Z`),
+        gain: row.holdings_value + row.placements_value - row.total_cost,
+      }))
+      .filter(
+        (row): row is { timestamp: number; gain: number } =>
+          Number.isFinite(row.timestamp) && row.gain !== null && row.gain !== undefined
+      )
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    const result: {
+      d1: number | null;
+      d7: number | null;
+      m1: number | null;
+    } = {
+      d1: null,
+      d7: null,
+      m1: null,
+    };
+    if (!rows.length) return result;
+
+    const latest = rows[rows.length - 1];
+    const periods: Array<{ key: keyof typeof result; days: number }> = [
+      { key: "d1", days: 1 },
+      { key: "d7", days: 7 },
+      { key: "m1", days: 30 },
+    ];
+
+    periods.forEach(({ key, days }) => {
+      const targetTimestamp = latest.timestamp - days * 24 * 60 * 60 * 1000;
+      let reference: { timestamp: number; gain: number } | null = null;
+      for (let idx = rows.length - 1; idx >= 0; idx -= 1) {
+        const candidate = rows[idx];
+        if (candidate.timestamp <= targetTimestamp) {
+          reference = candidate;
+          break;
+        }
+      }
+      if (!reference || reference.gain === 0) {
+        result[key] = null;
+        return;
+      }
+      result[key] = (latest.gain - reference.gain) / Math.abs(reference.gain);
+    });
+
+    return result;
+  }, [portfolioHistoryRows]);
+  const latentVariationItems = useMemo(
+    () => [
+      { label: "1 month", value: latentVariationPct.m1 },
+      { label: "7D", value: latentVariationPct.d7 },
+      { label: "1D", value: latentVariationPct.d1 },
+    ],
+    [latentVariationPct]
+  );
 
   const allocationChartOptions =
     allocationChartType === "donut" ? allocationOptions : allocationBarOptions;
@@ -2729,8 +2659,6 @@ const computeAnnualizedReturnBetween = (
   const plToggleLabel = plChartType === "donut" ? "Show bar chart" : "Show donut chart";
   const chartGroupLabel =
     CHART_GROUP_OPTIONS.find((option) => option.value === chartGroupBy)?.label || "Holding";
-  const hasHoldings = holdings.length > 0;
-  const hasPlacements = placements.length > 0;
   const chartHasHoldings = chartHoldings.length > 0;
   const chartHasPlacements = chartPlacements.length > 0;
   const allocationEmptyMessage =
@@ -2749,64 +2677,238 @@ const computeAnnualizedReturnBetween = (
         : chartHasHoldings
           ? "Select holdings/prices to see the P/L breakdown."
           : "Select placements to see the P/L breakdown.";
-  const sortedPlacements = useMemo(
-    () => [...placements].sort((a, b) => a.name.localeCompare(b.name)),
-    [placements]
+  const allocationSummaryPanel = (
+    <div className="summary-chart summary-chart-side">
+      <div className="summary-chart-header">
+        <p className="eyebrow">Allocation</p>
+        <div className="summary-chart-title">
+          <h3>Portfolio mix</h3>
+          {allocationChartType === "bar" && allocationData.total > 0 && (
+            <span className="pill ghost">
+              Total {formatMoney(allocationData.total, totalCurrency)}
+            </span>
+          )}
+        </div>
+        <p className="muted helper">
+          Based on latest prices · Grouped by {chartGroupLabel.toLowerCase()}
+        </p>
+        <div className="chart-header-actions">
+          <label className="chart-group-label">
+            Group by
+            <select
+              className="chart-select"
+              value={chartGroupBy}
+              onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+            >
+              {CHART_GROUP_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="icon-button compact chart-toggle"
+            onClick={() =>
+              setAllocationChartType((prev) => (prev === "donut" ? "bar" : "donut"))
+            }
+            aria-label={allocationToggleLabel}
+            title={allocationToggleLabel}
+            aria-pressed={allocationChartType === "bar"}
+          >
+            {allocationChartType === "donut" ? (
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <path
+                  d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                  fill="currentColor"
+                  fillRule="evenodd"
+                />
+              </svg>
+            )}
+          </button>
+          <button
+            type="button"
+            className="icon-button compact zoom-button"
+            onClick={() => setZoomedChart("allocation")}
+            aria-label="Expand allocation chart"
+          >
+            🔍
+          </button>
+        </div>
+      </div>
+      <div className="chart-wrapper">
+        <HighchartsReact highcharts={Highcharts} options={allocationChartOptions} />
+      </div>
+      {(!allocationData.points.length || !allocationData.total) && (
+        <p className="muted helper">{allocationEmptyMessage}</p>
+      )}
+      <div className="summary-chart-latent">
+        <div className="summary-chart-latent-header">
+          <span className="summary-chart-latent-title">latent variation</span>
+        </div>
+        <div className="latent-variation-grid summary-chart-latent-grid">
+          {latentVariationItems.map((item) => {
+            const trendClass =
+              item.value === null || item.value === undefined
+                ? ""
+                : item.value >= 0
+                  ? "positive"
+                  : "negative";
+            return (
+              <span
+                className={`latent-variation-item ${trendClass}`.trim()}
+                key={`allocation-latent-${item.label}`}
+              >
+                <span className="latent-variation-label">{item.label}</span>
+                <span className="latent-variation-value">{formatPercentSigned(item.value)}</span>
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
-  const placementsTotal = useMemo(() => {
-    if (!placements.length) return null;
-    return placements.reduce((sum, placement) => {
-      const converted = convertAmount(placement.current_value, placement.currency);
-      return sum + (converted ?? 0);
-    }, 0);
-  }, [placements, fxRates]);
-  const holdingsTotal = useMemo(() => {
-    if (!holdings.length) return null;
-    return holdings.reduce((sum, holding) => {
-      const marketValueNative =
-        holding.last_price !== null && holding.last_price !== undefined
-          ? holding.last_price * holding.shares
-          : holding.market_value;
-      const converted = convertAmount(
-        marketValueNative,
-        holding.currency,
-        holding.fx_rate,
-        true
-      );
-      return sum + (converted ?? 0);
-    }, 0);
-  }, [holdings, fxRates]);
-  const filteredHoldings = useMemo(() => {
-    if (holdingAccountFilter === "all") return holdings;
-    const accountId = Number(holdingAccountFilter);
-    if (!Number.isFinite(accountId)) return holdings;
-    return holdings.filter((holding) => {
-      const holdingAccountId = holding.account_id ?? holding.account?.id ?? null;
-      return holdingAccountId === accountId;
-    });
-  }, [holdings, holdingAccountFilter]);
-  const filteredHoldingsTotal = useMemo(() => {
-    if (!filteredHoldings.length) return null;
-    return filteredHoldings.reduce((sum, holding) => {
-      const marketValueNative =
-        holding.last_price !== null && holding.last_price !== undefined
-          ? holding.last_price * holding.shares
-          : holding.market_value;
-      const converted = convertAmount(
-        marketValueNative,
-        holding.currency,
-        holding.fx_rate,
-        true
-      );
-      return sum + (converted ?? 0);
-    }, 0);
-  }, [filteredHoldings, fxRates]);
-  const holdingCountLabel =
-    holdingAccountFilter === "all"
-      ? `${holdings.length} tracked`
-      : `${filteredHoldings.length} of ${holdings.length} tracked`;
-  const displayedHoldingsTotal =
-    holdingAccountFilter === "all" ? holdingsTotal : filteredHoldingsTotal;
+  const historySummaryPanel = (
+    <div className="summary-chart summary-chart-wide">
+      <div className="summary-chart-header">
+        <p className="eyebrow">History</p>
+        <div className="summary-chart-title">
+          <h3>
+            {selectedHistorySymbol ? `${selectedHistorySymbol} evolution` : "Portfolio evolution"}
+          </h3>
+        </div>
+        <p className="muted helper">
+          End-of-day values from your saved daily snapshots. Filter: {selectedHistoryFilterLabel}.
+        </p>
+        <div className="chart-header-actions history-actions">
+          <label className="chart-group-label">
+            Filter
+            <select
+              className="chart-select"
+              value={historySeriesFilter}
+              onChange={(event) => setHistorySeriesFilter(event.target.value)}
+            >
+              {historySeriesFilterOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="chart-group-label">
+            Window
+            <select
+              className="chart-select"
+              value={dailyHistoryDays}
+              onChange={(event) => setDailyHistoryDays(Number(event.target.value))}
+            >
+              {HISTORY_DAY_OPTIONS.map((days) => (
+                <option key={days} value={days}>
+                  {days}d
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="icon-button compact zoom-button"
+            onClick={() => setZoomedChart("history")}
+            aria-label="Expand history chart"
+          >
+            🔍
+          </button>
+        </div>
+      </div>
+      <div className="chart-wrapper">
+        <HighchartsReact
+          highcharts={Highcharts}
+          constructorType="stockChart"
+          options={portfolioEvolutionStockOptions}
+        />
+      </div>
+      {dailyHistoryLoading && <p className="muted helper">Loading history...</p>}
+      {!dailyHistoryLoading && !historyChartHasData && (
+        <p className="muted helper">{historyEmptyMessage}</p>
+      )}
+    </div>
+  );
+  const performanceSummaryPanel = (
+    <div className="summary-chart summary-chart-wide">
+      <div className="summary-chart-header">
+        <p className="eyebrow">Performance</p>
+        <div className="summary-chart-title">
+          <h3>P/L mix</h3>
+          {plChartType === "bar" && chartGainAbs !== null && chartGainAbs !== undefined && (
+            <span className="pill ghost">Total {formatMoneySigned(chartGainAbs, totalCurrency)}</span>
+          )}
+        </div>
+        <p className="muted helper">
+          Absolute gains vs losses by {chartGroupLabel.toLowerCase()}
+        </p>
+        <div className="chart-header-actions">
+          <label className="chart-group-label">
+            Group by
+            <select
+              className="chart-select"
+              value={chartGroupBy}
+              onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
+            >
+              {CHART_GROUP_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="icon-button compact chart-toggle"
+            onClick={() => setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))}
+            aria-label={plToggleLabel}
+            title={plToggleLabel}
+            aria-pressed={plChartType === "bar"}
+          >
+            {plChartType === "donut" ? (
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
+                <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
+                <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <path
+                  d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
+                  fill="currentColor"
+                  fillRule="evenodd"
+                />
+              </svg>
+            )}
+          </button>
+          <button
+            type="button"
+            className="icon-button compact zoom-button"
+            onClick={() => setZoomedChart("pl")}
+            aria-label="Expand P/L chart"
+          >
+            🔍
+          </button>
+        </div>
+      </div>
+      <div className="chart-wrapper">
+        <HighchartsReact highcharts={Highcharts} options={plChartOptions} />
+      </div>
+      {(!plData.points.length || !plData.total) && (
+        <p className="muted helper">{plEmptyMessage}</p>
+      )}
+    </div>
+  );
   const accountHoldingsCount = useMemo(() => {
     const counts = new Map<number, number>();
     holdings.forEach((holding) => {
@@ -2862,194 +2964,6 @@ const computeAnnualizedReturnBetween = (
     });
     return total;
   }, [accountHoldingsValue, accountPlacementsValue]);
-
-  const accountRows = useMemo<AccountRow[]>(() => {
-    return accounts.map((account) => {
-      const holdingsValue = accountHoldingsValue.get(account.id) || 0;
-      const placementsValue = accountPlacementsValue.get(account.id) || 0;
-      const allocationValue = holdingsValue + placementsValue;
-      const allocationPercent =
-        totalAllocationValue > 0 ? allocationValue / totalAllocationValue : null;
-      const totalValue = allocationValue + (account.liquidity || 0);
-      const holdingsCount = accountHoldingsCount.get(account.id) || 0;
-      const placementsCount = accountPlacementsCount.get(account.id) || 0;
-      const manualInvested = account.manual_invested || 0;
-      const performance = totalValue - manualInvested;
-      const performanceRatio = manualInvested > 0 ? performance / manualInvested : null;
-      return {
-        account,
-        holdingsValue,
-        placementsValue,
-        allocationValue,
-        allocationPercent,
-        totalValue,
-        holdingsCount,
-        placementsCount,
-        manualInvested,
-        performance,
-        performanceRatio,
-      };
-    });
-  }, [
-    accounts,
-    accountHoldingsCount,
-    accountHoldingsValue,
-    accountPlacementsCount,
-    accountPlacementsValue,
-    totalAllocationValue,
-  ]);
-
-  const sortedAccounts = useMemo(() => {
-    const list = [...accountRows];
-    const getValue = (row: AccountRow) => {
-      switch (accountSortField) {
-        case "name":
-          return row.account.name.toLowerCase();
-        case "type":
-          return (row.account.account_type || "").toLowerCase();
-        case "manual_invested":
-          return row.manualInvested;
-        case "holdings":
-          return row.allocationValue;
-        case "liquidity":
-          return row.account.liquidity ?? 0;
-        case "total":
-          return row.totalValue;
-        case "performance":
-          return row.performance;
-        default:
-          return null;
-      }
-    };
-
-    list.sort((a, b) => {
-      const av = getValue(a);
-      const bv = getValue(b);
-      const dir = accountSortDir === "asc" ? 1 : -1;
-      if (av === null || av === undefined) return 1;
-      if (bv === null || bv === undefined) return -1;
-      if (typeof av === "string" && typeof bv === "string") {
-        return av.localeCompare(bv) * dir;
-      }
-      if (av > bv) return dir;
-      if (av < bv) return -dir;
-      return 0;
-    });
-
-    return list;
-  }, [accountRows, accountSortDir, accountSortField]);
-
-  const accountsSummary = useMemo(() => {
-    if (!accountRows.length) return null;
-    let manualInvested = 0;
-    let allocationValue = 0;
-    let liquidity = 0;
-    let totalValue = 0;
-    let holdingsCount = 0;
-    let placementsCount = 0;
-    accountRows.forEach((row) => {
-      manualInvested += row.manualInvested;
-      allocationValue += row.allocationValue;
-      liquidity += row.account.liquidity || 0;
-      totalValue += row.totalValue;
-      holdingsCount += row.holdingsCount;
-      placementsCount += row.placementsCount;
-    });
-    const performance = totalValue - manualInvested;
-    const performanceRatio = manualInvested > 0 ? performance / manualInvested : null;
-    const allocationPercent =
-      totalAllocationValue > 0 ? allocationValue / totalAllocationValue : null;
-    return {
-      manualInvested,
-      allocationValue,
-      liquidity,
-      totalValue,
-      performance,
-      performanceRatio,
-      holdingsCount,
-      placementsCount,
-      allocationPercent,
-    };
-  }, [accountRows, totalAllocationValue]);
-
-  const sortedHoldings = useMemo(() => {
-    const list = [...filteredHoldings];
-    const getValue = (h: HoldingStats) => {
-      switch (sortField) {
-        case "instrument":
-          return (h.name || h.symbol || h.isin || "").toString().toLowerCase();
-        case "account":
-          return (h.account?.name || "").toString().toLowerCase();
-        case "acquired_at":
-          return h.acquired_at ? new Date(h.acquired_at).getTime() : null;
-        case "shares":
-          return h.shares;
-        case "cost":
-          return convertAmount(getHoldingTotalCost(h), h.currency);
-        case "last_price":
-          return convertAmount(h.last_price, h.currency);
-        case "value": {
-          const mv =
-            h.market_value ??
-            (h.last_price !== null && h.last_price !== undefined ? h.last_price * h.shares : null);
-          return convertAmount(mv, h.currency);
-        }
-        case "pl": {
-          const mv =
-            h.market_value ??
-            (h.last_price !== null && h.last_price !== undefined ? h.last_price * h.shares : null);
-          const totalCost = getHoldingTotalCost(h);
-          const convMv = convertAmount(mv, h.currency);
-          const convCost = convertAmount(totalCost, h.currency);
-          return convMv !== null && convMv !== undefined && convCost !== null && convCost !== undefined
-            ? convMv - convCost
-            : convertAmount(h.gain_abs, h.currency);
-        }
-        default:
-          return null;
-      }
-    };
-
-    list.sort((a, b) => {
-      const av = getValue(a);
-      const bv = getValue(b);
-      const dir = sortDir === "asc" ? 1 : -1;
-      if (av === null || av === undefined) return 1;
-      if (bv === null || bv === undefined) return -1;
-      if (typeof av === "string" && typeof bv === "string") {
-        return av.localeCompare(bv) * dir;
-      }
-      if (av > bv) return dir;
-      if (av < bv) return -dir;
-      return 0;
-    });
-
-    return list;
-  }, [filteredHoldings, sortField, sortDir]);
-
-  const handleSort = (field: SortField) => {
-    setSortDir((prev) => (field === sortField ? (prev === "asc" ? "desc" : "asc") : "desc"));
-    setSortField(field);
-  };
-
-  const renderSortIcon = (field: SortField) => {
-    const isActive = field === sortField;
-    const arrow = isActive ? (sortDir === "asc" ? "▲" : "▼") : "↕";
-    return <span className={`sort-arrow ${isActive ? "active" : "inactive"}`}>{arrow}</span>;
-  };
-
-  const handleAccountSort = (field: AccountSortField) => {
-    setAccountSortDir((prev) =>
-      field === accountSortField ? (prev === "asc" ? "desc" : "asc") : "desc"
-    );
-    setAccountSortField(field);
-  };
-
-  const renderAccountSortIcon = (field: AccountSortField) => {
-    const isActive = field === accountSortField;
-    const arrow = isActive ? (accountSortDir === "asc" ? "▲" : "▼") : "↕";
-    return <span className={`sort-arrow ${isActive ? "active" : "inactive"}`}>{arrow}</span>;
-  };
 
   const loadDailyHistory = useCallback(async () => {
     const token = authToken || getStoredAuthToken();
@@ -3154,11 +3068,12 @@ const computeAnnualizedReturnBetween = (
     }
   };
 
-  const handleAuthSubmit = async (e: React.FormEvent) => {
+  const handleAuthSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const email = authForm.email.trim();
-    const password = authForm.password.trim();
-    const name = authForm.name.trim();
+    const submittedForm = readAuthFormValues(e.currentTarget);
+    const email = submittedForm.email;
+    const password = submittedForm.password;
+    const name = submittedForm.name;
     if (!email || !password) {
       setAuthStatus({ kind: "error", message: "Email and password are required." });
       return;
@@ -3180,7 +3095,6 @@ const computeAnnualizedReturnBetween = (
         kind: "success",
         message: authMode === "login" ? "Signed in." : "Account created.",
       });
-      setAuthForm({ name: "", email: "", password: "" });
       setLoading(true);
       await loadPortfolio();
     } catch (err) {
@@ -3199,7 +3113,6 @@ const computeAnnualizedReturnBetween = (
     setLoading(false);
     setStatus({ kind: "idle" });
     setAuthStatus({ kind: "idle" });
-    setAuthForm({ name: "", email: "", password: "" });
     setShowAddHoldingModal(false);
     setShowSymbolModal(false);
     setBuyHoldingTarget(null);
@@ -4464,152 +4377,93 @@ const computeAnnualizedReturnBetween = (
     }
   };
 
+  const openCreateAccountModal = () => {
+    setAccountForm({
+      name: "",
+      account_type: "",
+      liquidity: "",
+      manual_invested: "",
+      created_at: formatDateInput(),
+    });
+    setEditingAccountId(null);
+    setShowAccountModal(true);
+  };
+
+  const openEditAccountModal = (account: Account) => {
+    setAccountForm({
+      name: account.name,
+      account_type: account.account_type || "",
+      liquidity: String(account.liquidity ?? 0),
+      manual_invested: String(account.manual_invested ?? 0),
+      created_at: account.created_at ? formatDateInput(new Date(account.created_at)) : formatDateInput(),
+    });
+    setEditingAccountId(account.id);
+    setShowAccountModal(true);
+  };
+
+  const openCreateHoldingModal = () => {
+    setSymbolSearchTerm("");
+    setEditingHoldingId(null);
+    setHoldingForm({
+      symbol: "",
+      price_tracker: "yahoo",
+      tracker_symbol: "",
+      shares: "",
+      cost_basis: "",
+      acquisition_fee_value: "",
+      currency: "EUR",
+      fx_rate: "",
+      sector: "",
+      industry: "",
+      asset_type: "",
+      account_id: defaultAccountId ? String(defaultAccountId) : "",
+      isin: "",
+      mic: "",
+      name: "",
+      href: "",
+      acquired_at: "",
+      manualPriceEnabled: false,
+      manualLastPrice: "",
+      manualLastPriceAt: formatDateTimeLocal(),
+    });
+    setShowAddHoldingModal(true);
+  };
+
+  const openCreatePlacementModal = () => {
+    resetPlacementForm();
+    setEditingPlacementId(null);
+    setShowPlacementModal(true);
+  };
+
+  const openEditPlacementModal = (placement: Placement) => {
+    setPlacementForm({
+      account_id: placement.account_id ? String(placement.account_id) : "",
+      name: placement.name,
+      placement_type: placement.placement_type || "",
+      sector: placement.sector || "",
+      industry: placement.industry || "",
+      currency: placement.currency || "EUR",
+      initial_value: "",
+      recorded_at: formatDateTimeLocal(),
+    });
+    setEditingPlacementId(placement.id);
+    setShowPlacementModal(true);
+  };
+
   return (
     <div className="page">
       <main className="grid">
         {!isAuthed ? (
           <>
-          <section className="card auth-card">
-            <div className="card-header">
-              <div>
-                {/* <p className="eyebrow">{authMode === "login" ? "Welcome back" : "Get started"}</p> */}
-                <h2>{authMode === "login" ? "Sign in to your portfolio" : "Create your account"}</h2>
-                <p className="muted helper">
-                  {authMode === "login"
-                    ? "Use your email and password to access holdings."
-                    : "Choose an email and password to start tracking."}
-                </p>
-              </div>
-              <div className="card-actions">
-                <button
-                  type="button"
-                  className="button compact"
-                  onClick={() => {
-                    setAuthMode((prev) => (prev === "login" ? "register" : "login"));
-                    setAuthStatus({ kind: "idle" });
-                  }}
-                >
-                  {authMode === "login" ? "Need access?" : "Back to sign in"}
-                </button>
-              </div>
-            </div>
-            {authMode === "login" ? (
-              <form
-                key="login"
-                id="auth-login-form"
-                name="login"
-                className="form"
-                onSubmit={handleAuthSubmit}
-                autoComplete="on"
-                method="post"
-                action="/auth/login"
-                data-auth-mode="login"
-                data-np-autofill-form-type="login"
-              >
-                <label htmlFor="login-email">
-                  Email
-                  <input
-                    id="login-email"
-                    name="username"
-                    type="email"
-                    value={authForm.email}
-                    onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
-                    placeholder="you@example.com"
-                    autoComplete="username"
-                    inputMode="email"
-                    data-np-autofill-field-type="username"
-                    required
-                  />
-                </label>
-                <label htmlFor="login-password">
-                  Password
-                  <input
-                    id="login-password"
-                    name="password"
-                    type="password"
-                    value={authForm.password}
-                    onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
-                    placeholder="Password"
-                    autoComplete="current-password"
-                    data-np-autofill-field-type="password"
-                    required
-                  />
-                </label>
-                <button
-                  className="button primary"
-                  type="submit"
-                  disabled={authStatus.kind === "loading"}
-                >
-                  {authStatus.kind === "loading" ? "Signing in..." : "Sign in"}
-                </button>
-              </form>
-            ) : (
-              <form
-                key="register"
-                id="auth-register-form"
-                name="register"
-                className="form"
-                onSubmit={handleAuthSubmit}
-                autoComplete="on"
-                method="post"
-                action="/auth/register"
-                data-auth-mode="register"
-                data-np-autofill-form-type="register"
-              >
-                <label htmlFor="register-name">
-                  Name
-                  <input
-                    id="register-name"
-                    name="name"
-                    type="text"
-                    value={authForm.name}
-                    onChange={(e) => setAuthForm((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Optional"
-                    autoComplete="name"
-                  />
-                </label>
-                <label htmlFor="register-email">
-                  Email
-                  <input
-                    id="register-email"
-                    name="email"
-                    type="email"
-                    value={authForm.email}
-                    onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
-                    placeholder="you@example.com"
-                    autoComplete="email"
-                    inputMode="email"
-                    data-np-autofill-field-type="email"
-                    required
-                  />
-                </label>
-                <label htmlFor="register-password">
-                  Password
-                  <input
-                    id="register-password"
-                    name="password"
-                    type="password"
-                    value={authForm.password}
-                    onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
-                    placeholder="At least 8 characters"
-                    autoComplete="new-password"
-                    data-np-autofill-field-type="new-password"
-                    required
-                  />
-                </label>
-                <button
-                  className="button primary"
-                  type="submit"
-                  disabled={authStatus.kind === "loading"}
-                >
-                  {authStatus.kind === "loading" ? "Creating account..." : "Create account"}
-                </button>
-              </form>
-            )}
-            {authStatus.kind === "error" && (
-              <p className="status status-error">{authStatus.message}</p>
-            )}
-          </section>
+          <AuthCard
+            authMode={authMode}
+            authStatus={authStatus}
+            onToggleMode={() => {
+              setAuthMode((prev) => (prev === "login" ? "register" : "login"));
+              setAuthStatus({ kind: "idle" });
+            }}
+            onSubmit={handleAuthSubmit}
+          />
           </>
         ) : (
           <>
@@ -4620,378 +4474,44 @@ const computeAnnualizedReturnBetween = (
                 </div>
                 <div className="card-actions">
                   {loading && <span className="pill ghost">Loading…</span>}
-                  <div className="user-menu" ref={userMenuRef}>
-                    <button
-                      type="button"
-                      className="avatar-button"
-                      aria-label="Account menu"
-                      aria-haspopup="menu"
-                      aria-expanded={isUserMenuOpen}
-                      onClick={() => setIsUserMenuOpen((prev) => !prev)}
-                    >
-                      <span className="avatar-initials">{userInitials}</span>
-                    </button>
-                    {isUserMenuOpen && (
-                      <div className="user-menu-dropdown" role="menu">
-                        <div className="user-menu-header">
-                          <span className="user-menu-email">{userDisplayEmail}</span>
-                        </div>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            navigate("/");
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M12 3v9l7.5 7.5A9 9 0 1 1 12 3z"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                                <path
-                                  d="M12 3a9 9 0 0 1 9 9h-9z"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Portfolio</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            navigate("/simulate/assurance-vie");
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M12 3l7 4v5c0 4.5-3.1 8.4-7 9.7-3.9-1.3-7-5.2-7-9.7V7l7-4z"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                                <path
-                                  d="M9.5 12.5l2 2 3.5-3.5"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Assurance vie</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            navigate("/simulate/compte-a-terme");
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <rect
-                                  x="3"
-                                  y="4"
-                                  width="18"
-                                  height="17"
-                                  rx="2"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                />
-                                <path
-                                  d="M8 2v4M16 2v4M3 9h18"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Compte a terme</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            navigate("/analysis/bsf120");
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M4 19h16M5 16l4-5 3 3 5-7"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                                <path
-                                  d="M15 7h2.5V9.5"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>BSF120</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className={`user-menu-item ${chatOpen ? "active" : ""}`.trim()}
-                          aria-pressed={chatOpen}
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            setChatToggleToken((prev) => prev + 1);
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M5 6h14v9H9l-4 4z"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Chat</span>
-                          </span>
-                        </button>
-                        <div className="user-menu-divider" />
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          aria-pressed={isTourActive}
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            if (isTourActive) {
-                              endTour();
-                            } else {
-                              startTour();
-                            }
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M12 3v18M3 12h18"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>{isTourActive ? "End tour" : "Start tour"}</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            handleExportBackup();
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M12 4v11M8 11l4 4 4-4M5 20h14"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Export Data</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            backupInputRef.current?.click();
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M12 20V9M8 13l4-4 4 4M5 4h14"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Import Data</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            handleRunYahooTargets();
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M4 19h16M6 15l3-3 3 2 5-6"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Run Yahoo targets</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            handleRefreshPrices();
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M20 11a8 8 0 1 0 2 5.5M20 4v7h-7"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Refresh prices</span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="user-menu-item danger"
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            handleLogout();
-                          }}
-                        >
-                          <span className="user-menu-item-content">
-                            <span className="user-menu-item-icon" aria-hidden="true">
-                              <svg viewBox="0 0 24 24">
-                                <path
-                                  d="M15 17l5-5-5-5M20 12H9M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.8"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <span>Log out</span>
-                          </span>
-                        </button>
-                      </div>
-                    )}
-                    <input
-                      ref={backupInputRef}
-                      type="file"
-                      accept=".json,application/json"
-                      onChange={handleImportBackup}
-                      hidden
+                  
+                  <PortfolioHeaderMenu
+                    userDisplayEmail={userDisplayEmail}
+                    userInitials={userInitials}
+                    chatOpen={chatOpen}
+                    themeMode={themeMode}
+                    isTourActive={isTourActive}
+                    onToggleChat={() => setChatToggleToken((prev) => prev + 1)}
+                    onToggleTheme={toggleThemeMode}
+                    onToggleTour={() => {
+                      if (isTourActive) {
+                        endTour();
+                      } else {
+                        startTour();
+                      }
+                    }}
+                    onExportData={handleExportBackup}
+                    onImportData={handleImportBackup}
+                    onRunYahooTargets={handleRunYahooTargets}
+                    onRefreshPrices={handleRefreshPrices}
+                    onLogout={handleLogout}
+                  />
+                </div>
+              </div>
+              <div className="summary-overview-layout">
+                <div className="summary-content">
+                  <div className="summary-grid portfolio-summary-grid">
+                    <PortfolioValueDonutCard
+                      cash={selectedLiquidity}
+                      latent={enhancedSummary.total_gain_abs}
+                      latentPct={enhancedSummary.total_gain_pct}
+                      portfolioValue={enhancedSummary.total_value}
+                      currency={totalCurrency}
                     />
                   </div>
                 </div>
+                {allocationSummaryPanel}
               </div>
-              <div className="summary-content">
-                <div className="summary-grid">
-                  <div className="stat">
-                    <p>Capital</p>
-                    <h3>{displayMoney(selectedCapitalContributed, totalCurrency)}</h3>
-                  </div>
-                  <div className="stat">
-                    <p>Cash available</p>
-                    <h3>{displayMoney(selectedLiquidity, totalCurrency)}</h3>
-                  </div>
-                  <div className="stat">
-                    <p>Portfolio costs</p>
-                    <h3>{displayMoney(enhancedSummary.total_cost, totalCurrency)}</h3>
-                  </div>
-                  
-                  <div className="stat">
-                    <p>Portfolio Value</p>
-                    <h3>{displayMoney(enhancedSummary.total_value, totalCurrency)}</h3>
-                  </div>
-                  <div className="stat">
-                    <p>Latent P/L</p>
-                    <h3
-                      className={
-                        enhancedSummary.total_gain_abs === null ||
-                        enhancedSummary.total_gain_abs === undefined
-                          ? ""
-                          : enhancedSummary.total_gain_abs >= 0
-                          ? "positive"
-                          : "negative"
-                      }
-                    >
-                      {displayMoneySigned(enhancedSummary.total_gain_abs, totalCurrency)}{" "}
-                      <span className="muted">
-                        <small> ({formatPercentSigned(enhancedSummary.total_gain_pct)}) </small>
-                      </span>
-                    </h3>
-                  </div>
-                  
-                </div>
                 <div className="summary-charts-toolbar">
                   <div className="summary-chart-view-toggle" role="group" aria-label="Chart view">
                     <button
@@ -5041,1064 +4561,48 @@ const computeAnnualizedReturnBetween = (
                   </div>
                 </div>
                 <div className="summary-charts">
-                  {summaryChartView === "history" ? (
-                    <div className="summary-chart summary-chart-wide">
-                      <div className="summary-chart-header">
-                        <p className="eyebrow">History</p>
-                        <div className="summary-chart-title">
-                          <h3>
-                            {selectedHistorySymbol
-                              ? `${selectedHistorySymbol} evolution`
-                              : "Portfolio evolution"}
-                          </h3>
-                        </div>
-                        <p className="muted helper">
-                          End-of-day values from your saved daily snapshots. Filter:{" "}
-                          {selectedHistoryFilterLabel}.
-                        </p>
-                        <div className="chart-header-actions history-actions">
-                          <label className="chart-group-label">
-                            Filter
-                            <select
-                              className="chart-select"
-                              value={historySeriesFilter}
-                              onChange={(event) => setHistorySeriesFilter(event.target.value)}
-                            >
-                              {historySeriesFilterOptions.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="chart-group-label">
-                            Window
-                            <select
-                              className="chart-select"
-                              value={dailyHistoryDays}
-                              onChange={(event) => setDailyHistoryDays(Number(event.target.value))}
-                            >
-                              {HISTORY_DAY_OPTIONS.map((days) => (
-                                <option key={days} value={days}>
-                                  {days}d
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <button
-                            type="button"
-                            className="icon-button compact zoom-button"
-                            onClick={() => setZoomedChart("history")}
-                            aria-label="Expand history chart"
-                          >
-                            🔍
-                          </button>
-                        </div>
-                      </div>
-                      <div className="chart-wrapper">
-                        <HighchartsReact
-                          highcharts={Highcharts}
-                          constructorType="stockChart"
-                          options={portfolioEvolutionStockOptions}
-                        />
-                      </div>
-                      {dailyHistoryLoading && (
-                        <p className="muted helper">Loading history...</p>
-                      )}
-                      {!dailyHistoryLoading && !historyChartHasData && (
-                        <p className="muted helper">
-                          {historyEmptyMessage}
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="summary-chart">
-                        <div className="summary-chart-header">
-                          <p className="eyebrow">Allocation</p>
-                          <div className="summary-chart-title">
-                            <h3>Portfolio mix</h3>
-                            {allocationChartType === "bar" && allocationData.total > 0 && (
-                              <span className="pill ghost">
-                                Total {formatMoney(allocationData.total, totalCurrency)}
-                              </span>
-                            )}
-                          </div>
-                          <p className="muted helper">
-                            Based on latest prices · Grouped by {chartGroupLabel.toLowerCase()}
-                          </p>
-                          <div className="chart-header-actions">
-                            <label className="chart-group-label">
-                              Group by
-                              <select
-                                className="chart-select"
-                                value={chartGroupBy}
-                                onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
-                              >
-                                {CHART_GROUP_OPTIONS.map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <button
-                              type="button"
-                              className="icon-button compact chart-toggle"
-                              onClick={() =>
-                                setAllocationChartType((prev) =>
-                                  prev === "donut" ? "bar" : "donut"
-                                )
-                              }
-                              aria-label={allocationToggleLabel}
-                              title={allocationToggleLabel}
-                              aria-pressed={allocationChartType === "bar"}
-                            >
-                              {allocationChartType === "donut" ? (
-                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                  <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
-                                  <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
-                                  <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
-                                </svg>
-                              ) : (
-                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                  <path
-                                    d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
-                                    fill="currentColor"
-                                    fillRule="evenodd"
-                                  />
-                                </svg>
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button compact zoom-button"
-                              onClick={() => setZoomedChart("allocation")}
-                              aria-label="Expand allocation chart"
-                            >
-                              🔍
-                            </button>
-                          </div>
-                        </div>
-                        <div className="chart-wrapper">
-                          <HighchartsReact highcharts={Highcharts} options={allocationChartOptions} />
-                        </div>
-                        {(!allocationData.points.length || !allocationData.total) && (
-                          <p className="muted helper">{allocationEmptyMessage}</p>
-                        )}
-                      </div>
-
-                      <div className="summary-chart">
-                        <div className="summary-chart-header">
-                          <p className="eyebrow">Performance</p>
-                          <div className="summary-chart-title">
-                            <h3>P/L mix</h3>
-                            {plChartType === "bar" &&
-                              chartGainAbs !== null &&
-                              chartGainAbs !== undefined && (
-                                <span className="pill ghost">
-                                  Total {formatMoneySigned(chartGainAbs, totalCurrency)}
-                                </span>
-                              )}
-                          </div>
-                          <p className="muted helper">
-                            Absolute gains vs losses by {chartGroupLabel.toLowerCase()}
-                          </p>
-                          <div className="chart-header-actions">
-                            <label className="chart-group-label">
-                              Group by
-                              <select
-                                className="chart-select"
-                                value={chartGroupBy}
-                                onChange={(e) => setChartGroupBy(e.target.value as ChartGroupBy)}
-                              >
-                                {CHART_GROUP_OPTIONS.map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <button
-                              type="button"
-                              className="icon-button compact chart-toggle"
-                              onClick={() => setPlChartType((prev) => (prev === "donut" ? "bar" : "donut"))}
-                              aria-label={plToggleLabel}
-                              title={plToggleLabel}
-                              aria-pressed={plChartType === "bar"}
-                            >
-                              {plChartType === "donut" ? (
-                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                  <rect x="2" y="3" width="12" height="2" rx="1" fill="currentColor" />
-                                  <rect x="2" y="7" width="9" height="2" rx="1" fill="currentColor" />
-                                  <rect x="2" y="11" width="6" height="2" rx="1" fill="currentColor" />
-                                </svg>
-                              ) : (
-                                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                                  <path
-                                    d="M8 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12zm0 3a3 3 0 1 1 0 6a3 3 0 0 1 0-6z"
-                                    fill="currentColor"
-                                    fillRule="evenodd"
-                                  />
-                                </svg>
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              className="icon-button compact zoom-button"
-                              onClick={() => setZoomedChart("pl")}
-                              aria-label="Expand P/L chart"
-                            >
-                              🔍
-                            </button>
-                          </div>
-                        </div>
-                        <div className="chart-wrapper">
-                          <HighchartsReact highcharts={Highcharts} options={plChartOptions} />
-                        </div>
-                        {(!plData.points.length || !plData.total) && (
-                          <p className="muted helper">{plEmptyMessage}</p>
-                        )}
-                      </div>
-                    </>
-                  )}
+                  {summaryChartView === "history" ? historySummaryPanel : performanceSummaryPanel}
                 </div>
-              </div>
             </section>
 
-            <section className="card accounts-card">
-              <div className="card-header">
-                <div>
-                  <p className="eyebrow">Accounts</p>
-                  <h2>Accounts</h2>
-                </div>
-                <div className="card-actions">
+            <AccountsCard
+              accounts={accounts}
+              totalCurrency={totalCurrency}
+              totalAllocationValue={totalAllocationValue}
+              accountHoldingsCount={accountHoldingsCount}
+              accountPlacementsCount={accountPlacementsCount}
+              accountHoldingsValue={accountHoldingsValue}
+              accountPlacementsValue={accountPlacementsValue}
+              addButtonRef={addAccountButtonRef}
+              onAddAccount={openCreateAccountModal}
+              onAddCash={(account) => openCashModal(account, "add")}
+              onWithdrawCash={(account) => openCashModal(account, "withdraw")}
+              onEditAccount={openEditAccountModal}
+              onDeleteAccount={setAccountDeleteTarget}
+            />
 
-                  <button
-                    type="button"
-                    className="button compact icon-only"
-                    onClick={() => setShowAccounts((prev) => !prev)}
-                    aria-label={showAccounts ? "Hide accounts" : "Show accounts"}
-                  >
-                    {showAccounts ? (
-                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                        <path
-                          d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                        <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-                      </svg>
-                  ) : (
-                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                        <path
-                          d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6z"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                        <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-                        <path
-                          d="M4 4l16 16"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    className="button primary compact"
-                    ref={addAccountButtonRef}
-                      onClick={() => {
-                        setAccountForm({
-                          name: "",
-                          account_type: "",
-                          liquidity: "",
-                          manual_invested: "",
-                          created_at: formatDateInput(),
-                        });
-                        setEditingAccountId(null);
-                        setShowAccountModal(true);
-                      }}
-                    >
-                      + Add
-                  </button>
-                </div>
-              </div>
-              {showAccounts &&
-                (accounts.length === 0 ? (
-                  <p className="empty">Add an account to organize your holdings.</p>
-                ) : (
-                  <div className="table account-table">
-                    <div className="table-head">
-                      <button
-                        type="button"
-                        className="table-sort"
-                        title="Account name."
-                        onClick={() => handleAccountSort("name")}
-                      >
-                        Name {renderAccountSortIcon("name")}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-sort"
-                        title="Account type."
-                        onClick={() => handleAccountSort("type")}
-                      >
-                        Type {renderAccountSortIcon("type")}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-sort"
-                        title="Capital contributed."
-                        onClick={() => handleAccountSort("manual_invested")}
-                      >
-                        Capital {renderAccountSortIcon("manual_invested")}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-sort"
-                        title="Value of holdings and placements in this account."
-                        onClick={() => handleAccountSort("holdings")}
-                      >
-                        Holdings allocation {renderAccountSortIcon("holdings")}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-sort"
-                        title="Current cash available."
-                        onClick={() => handleAccountSort("liquidity")}
-                      >
-                        Cash available {renderAccountSortIcon("liquidity")}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-sort"
-                        title="Holdings value plus liquidity."
-                        onClick={() => handleAccountSort("total")}
-                      >
-                        Total {renderAccountSortIcon("total")}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-sort"
-                        title="Total performance vs capital contributed."
-                        onClick={() => handleAccountSort("performance")}
-                      >
-                        Performance {renderAccountSortIcon("performance")}
-                      </button>
-                    </div>
-                    <div className="table-body">
-                      {sortedAccounts.map((row) => {
-                        const {
-                          account,
-                          allocationValue,
-                          allocationPercent,
-                          totalValue,
-                          holdingsCount,
-                          placementsCount,
-                          manualInvested,
-                          performance,
-                          performanceRatio,
-                        } = row;
-                        const holdingsLabel = holdingsCount === 1 ? "holding" : "holdings";
-                        const placementsLabel =
-                          placementsCount === 1 ? "placement" : "placements";
-                        const holdingsBreakdown =
-                          holdingsCount > 0 && placementsCount > 0
-                            ? `${holdingsCount} ${holdingsLabel} · ${placementsCount} ${placementsLabel}`
-                            : holdingsCount > 0
-                              ? `${holdingsCount} ${holdingsLabel}`
-                              : placementsCount > 0
-                                ? `${placementsCount} ${placementsLabel}`
-                                : `0 ${holdingsLabel}`;
-                        const performanceClass =
-                          performance > 0 ? "positive" : performance < 0 ? "negative" : "";
-                        return (
-                          <article className="table-row account-row" key={account.id}>
-                            <span className="account-identity">
-                              <strong className="account-name">{account.name}</strong>
-                              <small className="account-type">{account.account_type || "—"}</small>
-                            </span>
-                            <span className="account-actions">
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label={`Add cash to ${account.name}`}
-                                title="Add cash"
-                                onClick={() => openCashModal(account, "add")}
-                              >
-                                ➕
-                              </button>
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label={`Withdraw cash from ${account.name}`}
-                                title="Withdraw cash"
-                                onClick={() => openCashModal(account, "withdraw")}
-                              >
-                                ➖
-                              </button>
-                              <button
-                                type="button"
-                                className="icon-button"
-                                aria-label={`Edit ${account.name}`}
-                              onClick={() => {
-                                setAccountForm({
-                                  name: account.name,
-                                  account_type: account.account_type || "",
-                                  liquidity: String(account.liquidity ?? 0),
-                                  manual_invested: String(account.manual_invested ?? 0),
-                                  created_at: account.created_at
-                                    ? formatDateInput(new Date(account.created_at))
-                                    : formatDateInput(),
-                                });
-                                setEditingAccountId(account.id);
-                                setShowAccountModal(true);
-                              }}
-                            >
-                              ✏️
-                            </button>
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label={`Delete ${account.name}`}
-                                onClick={() => setAccountDeleteTarget(account)}
-                              >
-                                🗑️
-                              </button>
-                            </span>
-                            <span className="account-metrics">
-                              <span className="account-metric account-core-values">
-                                <div className="account-core-line">
-                                  <span>Capital</span>
-                                  <strong>{formatMoney(manualInvested, totalCurrency)}</strong>
-                                </div>
-                                <div className="account-core-line">
-                                  <span>Cash</span>
-                                  <strong>{formatMoney(account.liquidity, totalCurrency)}</strong>
-                                </div>
-                                <div className="account-core-line">
-                                  <span>Total</span>
-                                  <strong>{formatMoney(totalValue, totalCurrency)}</strong>
-                                </div>
-                              </span>
-                              <span className="account-metric account-insight-values">
-                                <div className="account-insight-line">
-                                  <span>P/L</span>
-                                  <span className={`account-insight-value account-insight-pl ${performanceClass}`}>
-                                    <span className="account-insight-pl-amount">
-                                      {formatMoneySigned(performance, totalCurrency)}
-                                    </span>
-                                    {performanceRatio !== null && (
-                                      <span className="account-insight-pl-ratio">
-                                        ({formatPercentSigned(performanceRatio)})
-                                      </span>
-                                    )}
-                                  </span>
-                                </div>
-                                <div className="account-insight-line">
-                                  <span>Share</span>
-                                  <strong className="account-insight-value">
-                                    {allocationPercent !== null
-                                      ? formatPercent(allocationPercent)
-                                      : "—"}
-                                  </strong>
-                                </div>
-                                <div className="account-insight-line">
-                                  <span>Holdings</span>
-                                  <strong className="account-insight-value">
-                                    {holdingsBreakdown}
-                                  </strong>
-                                </div>
-                              </span>
-                            </span>
-                          </article>
-                        );
-                      })}
-                      {accountsSummary && (
-                        <article className="table-row account-row account-summary-row">
-                          <span className="account-identity">
-                            <strong className="account-name">TOTAL</strong>
-                            <small className="account-type">All accounts</small>
-                          </span>
-                          <span className="account-actions account-actions-placeholder" aria-hidden="true" />
-                          <span className="account-metrics">
-                            <span className="account-metric">
-                              <span className="account-metric-label">Capital</span>
-                              <strong>{formatMoney(accountsSummary.manualInvested, totalCurrency)}</strong>
-                            </span>
-                            <span className="account-metric">
-                              <span className="account-metric-label">Allocation</span>
-                              <strong>{formatMoney(accountsSummary.allocationValue, totalCurrency)}</strong>
-                              <small>
-                                {accountsSummary.allocationPercent !== null
-                                  ? formatPercent(accountsSummary.allocationPercent)
-                                  : "—"}
-                              </small>
-                              <small>
-                                {accountsSummary.holdingsCount > 0 &&
-                                accountsSummary.placementsCount > 0
-                                  ? `${accountsSummary.holdingsCount} ${
-                                      accountsSummary.holdingsCount === 1
-                                        ? "holding"
-                                        : "holdings"
-                                    } · ${accountsSummary.placementsCount} ${
-                                      accountsSummary.placementsCount === 1
-                                        ? "placement"
-                                        : "placements"
-                                    }`
-                                  : accountsSummary.holdingsCount > 0
-                                    ? `${accountsSummary.holdingsCount} ${
-                                        accountsSummary.holdingsCount === 1
-                                          ? "holding"
-                                          : "holdings"
-                                      }`
-                                    : accountsSummary.placementsCount > 0
-                                      ? `${accountsSummary.placementsCount} ${
-                                          accountsSummary.placementsCount === 1
-                                            ? "placement"
-                                            : "placements"
-                                        }`
-                                      : "0 holdings"}
-                              </small>
-                            </span>
-                            <span className="account-metric">
-                              <span className="account-metric-label">Cash</span>
-                              <strong>{formatMoney(accountsSummary.liquidity, totalCurrency)}</strong>
-                            </span>
-                            <span className="account-metric">
-                              <span className="account-metric-label">Total</span>
-                              <strong>{formatMoney(accountsSummary.totalValue, totalCurrency)}</strong>
-                            </span>
-                            <span
-                              className={`account-metric account-performance ${
-                                accountsSummary.performance > 0
-                                  ? "positive"
-                                  : accountsSummary.performance < 0
-                                    ? "negative"
-                                    : ""
-                              }`}
-                            >
-                              <span className="account-metric-label">P/L</span>
-                              <strong>
-                                {formatMoneySigned(accountsSummary.performance, totalCurrency)}
-                              </strong>
-                              <small className="account-performance-ratio">
-                                {formatPercentSigned(accountsSummary.performanceRatio)}
-                              </small>
-                            </span>
-                          </span>
-                        </article>
-                      )}
-                    </div>
-                  </div>
-                ))}
-            </section>
+            <HoldingsCard
+              accounts={accounts}
+              holdings={holdings}
+              holdingAccountFilter={holdingAccountFilter}
+              totalCurrency={totalCurrency}
+              convertAmount={convertAmount}
+              onHoldingAccountFilterChange={setHoldingAccountFilter}
+              onAddHolding={openCreateHoldingModal}
+              onOpenHoldingActions={setHoldingActionsTarget}
+            />
 
-            <section className="card">
-          <div className="card-header">
-            <div>
-              <p className="eyebrow">Holdings</p>
-              <h2>Positions</h2>
-            </div>
-            <div className="card-actions">
-              <label className="chart-group-label">
-                Account
-                <select
-                  className="chart-select"
-                  value={holdingAccountFilter}
-                  onChange={(e) => setHoldingAccountFilter(e.target.value)}
-                >
-                  <option value="all">All accounts</option>
-                  {accounts.map((account) => (
-                    <option key={account.id} value={String(account.id)}>
-                      {account.name}
-                      {account.account_type ? ` · ${account.account_type}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <span className="pill ghost">{holdingCountLabel}</span>
-              {displayedHoldingsTotal !== null && (
-                <span className="pill ghost">
-                  {formatMoney(displayedHoldingsTotal, totalCurrency)} total
-                </span>
-              )}
-              <button
-                  type="button"
-                  className="button primary compact"
-                  onClick={() => {
-                    setSymbolSearchTerm("");
-                    setEditingHoldingId(null);
-                    setHoldingForm({
-                      symbol: "",
-                      price_tracker: "yahoo",
-                      tracker_symbol: "",
-                      shares: "",
-                      cost_basis: "",
-                      acquisition_fee_value: "",
-                      currency: "EUR",
-                      fx_rate: "",
-                      sector: "",
-                      industry: "",
-                      asset_type: "",
-                      account_id: defaultAccountId ? String(defaultAccountId) : "",
-                      isin: "",
-                      mic: "",
-                      name: "",
-                      href: "",
-                      acquired_at: "",
-                      manualPriceEnabled: false,
-                      manualLastPrice: "",
-                      manualLastPriceAt: formatDateTimeLocal(),
-                    });
-                    setShowAddHoldingModal(true);
-                  }}
-                >
-                  + Add
-                </button>
-            </div>
-          </div>
-          {holdings.length === 0 ? (
-            <p className="empty">Add your first holding to start tracking.</p>
-          ) : filteredHoldings.length === 0 ? (
-            <p className="empty">No holdings for the selected account.</p>
-          ) : (
-            <div className="table positions-table">
-              <div className="table-head">
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Company name and ticker for the position."
-                  onClick={() => handleSort("instrument")}
-                >
-                  Instrument {renderSortIcon("instrument")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Current market value and latest price."
-                  onClick={() => handleSort("value")}
-                >
-                  Value / Last {renderSortIcon("value")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Profit/loss in percent and amount."
-                  onClick={() => handleSort("pl")}
-                >
-                  P/L {renderSortIcon("pl")}
-                </button>
-                <button
-                  type="button"
-                  className="table-sort"
-                  title="Cost per share, number of shares, total cost, and fees."
-                  onClick={() => handleSort("cost")}
-                >
-                  Cost Details {renderSortIcon("cost")}
-                </button>
-                <span>Actions</span>
-              </div>
-              <div className="table-body">
-                {sortedHoldings.map((holding: HoldingStats) => {
-                  const totalCost = getHoldingTotalCost(holding);
-                  const feeValue = getHoldingFeeValue(holding);
-                  const lastPrice = holding.last_price;
-                  const marketValueNative =
-                    lastPrice !== null && lastPrice !== undefined
-                      ? lastPrice * holding.shares
-                      : holding.market_value;
-                  const marketValueEur = convertAmount(marketValueNative, holding.currency);
-                  const totalCostEur = convertAmount(
-                    totalCost,
-                    holding.currency,
-                    holding.fx_rate,
-                    true
-                  );
-                  const gainAbsNative =
-                    marketValueNative !== null && marketValueNative !== undefined
-                      ? marketValueNative - totalCost
-                      : holding.gain_abs;
-                  const gainAbsEur =
-                    marketValueEur !== null && marketValueEur !== undefined && totalCostEur !== null && totalCostEur !== undefined
-                      ? marketValueEur - totalCostEur
-                      : convertAmount(gainAbsNative, holding.currency);
-                  const gainPct =
-                    gainAbsEur !== null && gainAbsEur !== undefined && totalCostEur !== null && totalCostEur > 0
-                      ? gainAbsEur / totalCostEur
-                      : marketValueNative !== null && marketValueNative !== undefined && totalCost > 0
-                        ? gainAbsNative / totalCost
-                        : holding.gain_pct;
-                  const lastPriceDisplay = renderAmount(lastPrice, holding.currency);
-                  const valueDisplay = renderAmount(marketValueNative, holding.currency);
-                  const gainDisplayPrimary =
-                    gainAbsEur !== null && gainAbsEur !== undefined
-                      ? formatMoney(gainAbsEur, totalCurrency)
-                      : formatMoney(gainAbsNative, holding.currency);
-                  const gainDisplaySecondary =
-                    gainAbsEur !== null &&
-                    gainAbsEur !== undefined &&
-                    holding.currency?.toUpperCase() !== DISPLAY_CURRENCY &&
-                    gainAbsNative !== null &&
-                    gainAbsNative !== undefined
-                      ? formatMoney(gainAbsNative, holding.currency)
-                      : null;
-                  const isUsdHolding = (holding.currency || "").toUpperCase() === "USD";
-                  const isForeignCurrency =
-                    holding.currency?.toUpperCase() !== DISPLAY_CURRENCY;
-                  const fxRate = isForeignCurrency ? holding.fx_rate : null;
-                  const costEur = fxRate && totalCost ? totalCost * fxRate : null;
-                  const costPerShareEur =
-                    fxRate && holding.cost_basis ? holding.cost_basis * fxRate : null;
-                  const feeEur = fxRate && feeValue ? feeValue * fxRate : null;
-                  const costPerSharePrimary =
-                    isForeignCurrency && costPerShareEur !== null && costPerShareEur !== undefined
-                      ? formatMoney(costPerShareEur, DISPLAY_CURRENCY)
-                      : formatMoney(holding.cost_basis, holding.currency);
-                  const costPerShareSecondary =
-                    isForeignCurrency && costPerShareEur !== null && costPerShareEur !== undefined
-                      ? formatMoney(holding.cost_basis, holding.currency)
-                      : null;
-                  const showCostPerShareSecondary =
-                    costPerShareSecondary !== null &&
-                    costPerShareSecondary !== undefined &&
-                    !isUsdHolding;
-                  const totalCostPrimary =
-                    isForeignCurrency && costEur !== null && costEur !== undefined
-                      ? formatMoney(costEur, DISPLAY_CURRENCY)
-                      : formatMoney(totalCost, holding.currency);
-                  const totalCostSecondary =
-                    isForeignCurrency && costEur !== null && costEur !== undefined
-                      ? formatMoney(totalCost, holding.currency)
-                      : null;
-                  const feePrimary =
-                    isForeignCurrency && feeEur !== null && feeEur !== undefined
-                      ? formatMoney(feeEur, DISPLAY_CURRENCY)
-                      : formatMoney(feeValue, holding.currency);
-                  const feeSecondary =
-                    isForeignCurrency && feeEur !== null && feeEur !== undefined
-                      ? formatMoney(feeValue, holding.currency)
-                      : null;
-                  const instrumentName = holding.name || holding.symbol || holding.isin || "Unknown";
-                  const instrumentHref = holding.href || "";
-                  const gainClassValue =
-                    gainAbsEur !== null && gainAbsEur !== undefined ? gainAbsEur : gainAbsNative;
-                  const gainSignSource =
-                    gainPct !== null && gainPct !== undefined ? gainPct : gainClassValue;
-                  const gainClass =
-                    gainSignSource === null || gainSignSource === undefined
-                      ? ""
-                      : gainSignSource >= 0
-                        ? "positive"
-                        : "negative";
-                  const analystProjectionPct =
-                    holding.yahoo_target_mean !== null &&
-                    holding.yahoo_target_mean !== undefined &&
-                    holding.last_price !== null &&
-                    holding.last_price !== undefined &&
-                    holding.last_price > 0
-                      ? (holding.yahoo_target_mean - holding.last_price) / holding.last_price
-                      : null;
-                  const analystProjectionArrow =
-                    analystProjectionPct === null || analystProjectionPct === undefined
-                      ? ""
-                      : analystProjectionPct >= 0
-                        ? "↗"
-                        : "↘";
-                  const hasGainBadge = gainPct !== null && gainPct !== undefined;
-                  const hasAnalystBadge =
-                    analystProjectionPct !== null && analystProjectionPct !== undefined;
-                  return (
-                    <div className="table-row position-row" key={holding.id}>
-                      <span className="instrument-cell" data-label="Instrument">
-                        <div className="position-card-header">
-                          <div className="position-title-block">
-                            {instrumentHref ? (
-                              <a
-                                href={instrumentHref}
-                                className="name-link position-instrument-name"
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                {instrumentName}
-                              </a>
-                            ) : (
-                              <span className="muted position-instrument-name">{instrumentName}</span>
-                            )}
-                            <small className="position-title-meta">
-                              {holding.asset_type ? ` ${holding.asset_type}` : ""}
-                              {holding.sector ? ` · ${holding.sector}` : ""}
-                            </small>
-                          </div>
-                          <span
-                            className={`position-header-badges ${
-                              hasGainBadge || hasAnalystBadge ? "" : "empty"
-                            }`.trim()}
-                          >
-                            {hasGainBadge && hasAnalystBadge ? (
-                              <span className="position-badges-stack">
-                                <span className={`position-pl-badge ${gainClass}`.trim()}>
-                                  {formatPercentSigned(gainPct)}
-                                </span>
-                                <span className="position-analyst-badge">
-                                  <span className="position-analyst-badge-arrow">
-                                    {analystProjectionArrow}
-                                  </span>
-                                  {formatPercentSigned(analystProjectionPct)}
-                                </span>
-                              </span>
-                            ) : hasGainBadge ? (
-                              <span className={`position-pl-badge ${gainClass}`.trim()}>
-                                {formatPercentSigned(gainPct)}
-                              </span>
-                            ) : hasAnalystBadge ? (
-                              <span className="position-analyst-badge">
-                                <span className="position-analyst-badge-arrow">
-                                  {analystProjectionArrow}
-                                </span>
-                                {formatPercentSigned(analystProjectionPct)}
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="holding-actions" data-label="Actions">
-                            <button
-                              type="button"
-                              className="icon-button"
-                              aria-label={`Open actions for ${holding.symbol}`}
-                              title="View details and actions"
-                              onClick={() => setHoldingActionsTarget(holding)}
-                            >
-                              ⋯
-                            </button>
-                          </span>
-                        </div>
-                      </span>
-                      <span className="position-metrics">
-                        <span className="position-details">
-                          <span className="metric-label">Cost (# {holding.shares.toFixed(2)})</span>
-                          <span className="position-cost-primary">
-                            {totalCostPrimary}
-                            {totalCostSecondary && !isUsdHolding && (
-                              <small> ({totalCostSecondary})</small>
-                            )}
-                          </span>
-                          <span className="position-cost-share">
-                            {costPerSharePrimary}
-                            {showCostPerShareSecondary && <small> ({costPerShareSecondary})</small>}
-                          </span>
-                          {feeValue > 0 && (
-                            <span className="position-cost-fee">
-                              + {feePrimary}
-                              {feeSecondary && !isUsdHolding && <small> ({feeSecondary})</small>}
-                            </span>
-                          )}
-                        </span>
-                        
-                        <span className="position-value">
-                          <span className="metric-label">Value</span>
-                          <span className="position-value-primary">
-                            {valueDisplay.primary}
-                            {valueDisplay.secondary && !isUsdHolding && (
-                              <small> ({valueDisplay.secondary})</small>
-                            )}
-                          </span>
-                          <span className="position-value-last">
-                            Last {lastPriceDisplay.primary}
-                            {lastPriceDisplay.secondary && !isUsdHolding && (
-                              <small> ({lastPriceDisplay.secondary})</small>
-                            )}
-                          </span>
-                        </span>
-                        
-                        <span className="pl-cell position-pl">
-                          <span className="metric-label">P/L</span>
-                          <span className={`pl-amount ${gainClass}`.trim()}>{gainDisplayPrimary}</span>
-                          {gainDisplaySecondary && !isUsdHolding && <small>{gainDisplaySecondary}</small>}
-                        </span>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="card placements-card">
-          <div className="card-header">
-            <div>
-              <p className="eyebrow">Placements</p>
-              <h2>Placements</h2>
-            </div>
-            <div className="card-actions">
-              <span className="pill ghost">{placements.length} tracked</span>
-              {placementsTotal !== null && (
-                <span className="pill ghost">
-                  {formatMoney(placementsTotal, totalCurrency)} total
-                </span>
-              )}
-              <button
-                type="button"
-                className="button primary compact"
-                onClick={() => {
-                  resetPlacementForm();
-                  setEditingPlacementId(null);
-                  setShowPlacementModal(true);
-                }}
-              >
-                + Add
-              </button>
-            </div>
-          </div>
-          {!hasPlacements ? (
-            <p className="empty">Add a placement to track manual values.</p>
-          ) : (
-            <div className="table placements-table">
-              <div className="table-body">
-                {sortedPlacements.map((placement) => {
-                  const placementCurrency = placement.currency || "EUR";
-                  const valueDisplay = renderAmount(placement.current_value, placementCurrency);
-                  const initialValue = placement.initial_value;
-                  const currentValue = placement.current_value;
-                  const contributions = placement.total_contributions ?? 0;
-                  const baseValue =
-                    initialValue !== null && initialValue !== undefined
-                      ? initialValue + contributions
-                      : null;
-                  const plRaw =
-                    baseValue !== null &&
-                    currentValue !== null &&
-                    currentValue !== undefined
-                      ? currentValue - baseValue
-                      : null;
-                  const rate =
-                    plRaw !== null && baseValue !== null && baseValue > 0
-                      ? plRaw / baseValue
-                      : null;
-                  const contributedDisplay = renderAmount(baseValue, placementCurrency);
-                  const plDisplay = renderAmount(plRaw, placementCurrency);
-                  const account =
-                    placement.account_id !== null && placement.account_id !== undefined
-                      ? accountsById.get(placement.account_id)
-                      : null;
-                  const plClass =
-                    plRaw === null || plRaw === undefined
-                      ? ""
-                      : plRaw >= 0
-                        ? "positive"
-                        : "negative";
-                  return (
-                    <div className="placement-row" key={placement.id}>
-                      <span className="instrument-cell">
-                        <span className="instrument-name-row">
-                          <span className="placement-instrument-name">{placement.name}</span>
-                          {rate !== null && rate !== undefined && (
-                            <span className={`position-pl-badge ${plClass}`.trim()}>
-                              {formatPercentSigned(rate)}
-                            </span>
-                          )}
-                        </span>
-                        <small>
-                          {placement.placement_type || "—"}
-                          {account?.name ? ` · ${account.name}` : ""}
-                        </small>
-                      </span>
-                      <span className="placement-metrics">
-                        <span className="placement-value">
-                          <span className="metric-label">Value</span>
-                          <span className="placement-value-primary">
-                            {valueDisplay.primary}
-                            {valueDisplay.secondary && <small> ({valueDisplay.secondary})</small>}
-                          </span>
-                          <span className="placement-value-date">
-                            {formatDate(placement.last_snapshot_at)}
-                          </span>
-                        </span>
-                        <span className="placement-initial">
-                          <span className="metric-label">Contributed</span>
-                          <span className="placement-initial-primary">
-                            {contributedDisplay.primary}
-                            {contributedDisplay.secondary && (
-                              <small> ({contributedDisplay.secondary})</small>
-                            )}
-                          </span>
-                        </span>
-                        <span className={`placement-pl ${plClass}`.trim()}>
-                          <span className="metric-label">P/L</span>
-                          <span className={`placement-pl-amount ${plClass}`.trim()}>
-                            {plDisplay.primary}
-                          </span>
-                          {plDisplay.secondary && <small>{plDisplay.secondary}</small>}
-                        </span>
-                      </span>
-                      <span className="account-actions placement-actions">
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`View chart for ${placement.name}`}
-                          title="View chart"
-                          onClick={() => setPlacementChartTarget(placement)}
-                        >
-                          📈
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`Update ${placement.name}`}
-                          title="Update value"
-                          onClick={() => openPlacementHistory(placement)}
-                        >
-                          +
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`Edit ${placement.name}`}
-                          onClick={() => {
-                            setPlacementForm({
-                              account_id: placement.account_id
-                                ? String(placement.account_id)
-                                : "",
-                              name: placement.name,
-                              placement_type: placement.placement_type || "",
-                              sector: placement.sector || "",
-                              industry: placement.industry || "",
-                              currency: placement.currency || "EUR",
-                              initial_value: "",
-                              recorded_at: formatDateTimeLocal(),
-                            });
-                            setEditingPlacementId(placement.id);
-                            setShowPlacementModal(true);
-                          }}
-                        >
-                          ✏️
-                        </button>
-                        <button
-                          type="button"
-                          className="icon-button"
-                          aria-label={`Delete ${placement.name}`}
-                          onClick={() => setPlacementDeleteTarget(placement)}
-                        >
-                          🗑️
-                        </button>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </section>
+        <PlacementsCard
+          placements={placements}
+          accountsById={accountsById}
+          totalCurrency={totalCurrency}
+          convertAmount={convertAmount}
+          onAddPlacement={openCreatePlacementModal}
+          onOpenPlacementChart={setPlacementChartTarget}
+          onOpenPlacementHistory={openPlacementHistory}
+          onEditPlacement={openEditPlacementModal}
+          onDeletePlacement={setPlacementDeleteTarget}
+        />
           </>
         )}
       </main>

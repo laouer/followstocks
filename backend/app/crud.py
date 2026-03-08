@@ -7,6 +7,12 @@ from . import models, schemas
 from .services.market_data_service import fetch_fx_rate_sync
 
 DEFAULT_ACCOUNT_NAME = "Main"
+EVOLUTION_WINDOWS = (
+    ("evolution_1y_pct", timedelta(days=365)),
+    ("evolution_1m_pct", timedelta(days=30)),
+    ("evolution_5d_pct", timedelta(days=5)),
+    ("evolution_1d_pct", timedelta(days=1)),
+)
 
 
 def get_user(db: Session, user_id: int) -> Optional[models.User]:
@@ -372,7 +378,70 @@ def add_price_snapshot(
     return holding
 
 
-def build_holding_stats(db: Session, holding: models.Holding) -> schemas.HoldingStats:
+def _build_holding_snapshot_lookup(
+    db: Session,
+    user_id: int,
+    symbols: list[str],
+) -> dict[str, list[models.HoldingDailySnapshot]]:
+    if not symbols:
+        return {}
+    rows = (
+        db.query(models.HoldingDailySnapshot)
+        .filter(
+            models.HoldingDailySnapshot.user_id == user_id,
+            models.HoldingDailySnapshot.symbol.in_(symbols),
+            models.HoldingDailySnapshot.close_price.isnot(None),
+        )
+        .order_by(
+            models.HoldingDailySnapshot.symbol.asc(),
+            models.HoldingDailySnapshot.snapshot_date.desc(),
+        )
+        .all()
+    )
+    lookup: dict[str, list[models.HoldingDailySnapshot]] = {}
+    for row in rows:
+        symbol_key = (row.symbol or "").upper().strip()
+        if not symbol_key:
+            continue
+        lookup.setdefault(symbol_key, []).append(row)
+    return lookup
+
+
+def _compute_holding_evolution_pct(
+    holding: models.Holding,
+    snapshot_rows: list[models.HoldingDailySnapshot],
+) -> dict[str, float | None]:
+    evolution_pct: dict[str, float | None] = {key: None for key, _ in EVOLUTION_WINDOWS}
+    latest_price = float(holding.last_price) if holding.last_price and holding.last_price > 0 else None
+    if latest_price is None:
+        for row in snapshot_rows:
+            if row.close_price and row.close_price > 0:
+                latest_price = float(row.close_price)
+                break
+    if latest_price is None:
+        return evolution_pct
+
+    as_of_day = holding.last_snapshot_at.date() if holding.last_snapshot_at else date.today()
+    for key, window in EVOLUTION_WINDOWS:
+        target_day = as_of_day - window
+        reference_price: float | None = None
+        for row in snapshot_rows:
+            if row.snapshot_date > target_day:
+                continue
+            if row.close_price is None or row.close_price <= 0:
+                continue
+            reference_price = float(row.close_price)
+            break
+        if reference_price is not None and reference_price > 0:
+            evolution_pct[key] = (latest_price - reference_price) / reference_price
+    return evolution_pct
+
+
+def build_holding_stats(
+    db: Session,
+    holding: models.Holding,
+    snapshot_lookup: Optional[dict[str, list[models.HoldingDailySnapshot]]] = None,
+) -> schemas.HoldingStats:
     fee_value = holding.acquisition_fee_value if holding.acquisition_fee_value is not None else 0
     cost_total = holding.shares * holding.cost_basis + fee_value
     last_price = holding.last_price
@@ -382,6 +451,9 @@ def build_holding_stats(db: Session, holding: models.Holding) -> schemas.Holding
 
     hourly_change = None
     hourly_change_pct = None
+    symbol_key = (holding.symbol or "").upper().strip()
+    snapshot_rows = snapshot_lookup.get(symbol_key, []) if snapshot_lookup else []
+    evolution_pct = _compute_holding_evolution_pct(holding, snapshot_rows)
 
     return schemas.HoldingStats(
         id=holding.id,
@@ -416,6 +488,10 @@ def build_holding_stats(db: Session, holding: models.Holding) -> schemas.Holding
         gain_pct=gain_pct,
         hourly_change=hourly_change,
         hourly_change_pct=hourly_change_pct,
+        evolution_1y_pct=evolution_pct["evolution_1y_pct"],
+        evolution_1m_pct=evolution_pct["evolution_1m_pct"],
+        evolution_5d_pct=evolution_pct["evolution_5d_pct"],
+        evolution_1d_pct=evolution_pct["evolution_1d_pct"],
     )
 
 
@@ -427,7 +503,9 @@ def get_holdings_with_stats(db: Session, user_id: int) -> List[schemas.HoldingSt
         .order_by(models.Holding.symbol.asc())
         .all()
     )
-    return [build_holding_stats(db, holding) for holding in holdings]
+    symbols = sorted({(holding.symbol or "").upper().strip() for holding in holdings if holding.symbol})
+    snapshot_lookup = _build_holding_snapshot_lookup(db, user_id, symbols)
+    return [build_holding_stats(db, holding, snapshot_lookup) for holding in holdings]
 
 
 def get_holdings(db: Session, user_id: int) -> List[models.Holding]:

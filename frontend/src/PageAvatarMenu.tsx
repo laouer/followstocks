@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { clearAuthToken, fetchCurrentUser, getStoredAuthToken, type AuthUser } from "./api";
+import { applyTheme, getStoredTheme, setThemePreference, type ThemeMode } from "./theme";
 
 type PageAvatarMenuProps = {
   chatActive?: boolean;
@@ -19,14 +20,20 @@ const getInitials = (email?: string | null) => {
 
 function PageAvatarMenu({ chatActive = false, onChatToggle }: PageAvatarMenuProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [authToken, setAuthToken] = useState<string | null>(() => getStoredAuthToken());
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => getStoredTheme());
 
   useEffect(() => {
     setAuthToken(getStoredAuthToken());
   }, []);
+
+  useEffect(() => {
+    applyTheme(themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -74,6 +81,14 @@ function PageAvatarMenu({ chatActive = false, onChatToggle }: PageAvatarMenuProp
     navigate("/");
   };
 
+  const handleToggleTheme = () => {
+    setThemeMode((prev) => {
+      const next: ThemeMode = prev === "dark" ? "light" : "dark";
+      return setThemePreference(next);
+    });
+    setIsOpen(false);
+  };
+
   return (
     <div className="user-menu" ref={menuRef}>
       <button
@@ -92,7 +107,11 @@ function PageAvatarMenu({ chatActive = false, onChatToggle }: PageAvatarMenuProp
             <span className="user-menu-email">{userDisplayEmail}</span>
           </div>
 
-          <button type="button" className="user-menu-item" onClick={() => navigateTo("/")}>
+          <button
+            type="button"
+            className={`user-menu-item ${location.pathname === "/" ? "active" : ""}`.trim()}
+            onClick={() => navigateTo("/")}
+          >
             <span className="user-menu-item-content">
               <span className="user-menu-item-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
@@ -115,6 +134,28 @@ function PageAvatarMenu({ chatActive = false, onChatToggle }: PageAvatarMenuProp
                 </svg>
               </span>
               <span>Portfolio</span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={`user-menu-item ${location.pathname === "/portfolio/compare" ? "active" : ""}`.trim()}
+            onClick={() => navigateTo("/portfolio/compare")}
+          >
+            <span className="user-menu-item-content">
+              <span className="user-menu-item-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M4 7h6v10H4zM14 4h6v16h-6z"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span>Compare views</span>
             </span>
           </button>
 
@@ -237,6 +278,37 @@ function PageAvatarMenu({ chatActive = false, onChatToggle }: PageAvatarMenuProp
               </span>
             </button>
           )}
+
+          <button
+            type="button"
+            className={`user-menu-item ${themeMode === "light" ? "active" : ""}`.trim()}
+            aria-pressed={themeMode === "light"}
+            onClick={handleToggleTheme}
+          >
+            <span className="user-menu-item-content">
+              <span className="user-menu-item-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M12 3v2M12 19v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M3 12h2M19 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                  />
+                </svg>
+              </span>
+              <span>{themeMode === "dark" ? "Switch to light theme" : "Switch to dark theme"}</span>
+            </span>
+          </button>
 
           <div className="user-menu-divider" />
 

@@ -41,6 +41,10 @@ export interface HoldingStats {
   gain_pct: number | null;
   hourly_change: number | null;
   hourly_change_pct: number | null;
+  evolution_1y_pct?: number | null;
+  evolution_1m_pct?: number | null;
+  evolution_5d_pct?: number | null;
+  evolution_1d_pct?: number | null;
 }
 
 export interface Placement {

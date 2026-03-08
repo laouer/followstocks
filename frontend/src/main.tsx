@@ -6,13 +6,18 @@ import Bsf120Analysis from "./Bsf120Analysis";
 import Cac40Analysis from "./Cac40Analysis";
 import AssuranceVieSimulator from "./AssuranceVieSimulator";
 import CompteATermeSimulator from "./CompteATermeSimulator";
+import PortfolioApproachComparison from "./PortfolioApproachComparison";
+import { applyTheme, getStoredTheme } from "./theme";
 import "./styles.css";
+
+applyTheme(getStoredTheme());
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<App />} />
+        <Route path="/portfolio/compare" element={<PortfolioApproachComparison />} />
         <Route path="/analysis/cac40" element={<Cac40Analysis />} />
         <Route path="/analysis/bsf120" element={<Bsf120Analysis />} />
         <Route path="/simulate/assurance-vie" element={<AssuranceVieSimulator />} />

@@ -322,6 +322,10 @@ class HoldingStats(Holding):
     gain_pct: Optional[float] = None
     hourly_change: Optional[float] = None
     hourly_change_pct: Optional[float] = None
+    evolution_1y_pct: Optional[float] = None
+    evolution_1m_pct: Optional[float] = None
+    evolution_5d_pct: Optional[float] = None
+    evolution_1d_pct: Optional[float] = None
 
 
 class PlacementBase(BaseModel):
