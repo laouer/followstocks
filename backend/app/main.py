@@ -746,6 +746,79 @@ def delete_account(
     return {"status": "deleted", "deleted_holdings": deleted_holdings}
 
 
+@app.get("/integrations/boursorama/session", response_model=schemas.BoursoramaSessionStatus)
+def get_boursorama_session_status(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    from .boursorama_cash_sync import get_session_status
+
+    return get_session_status(current_user.id)
+
+
+@app.post(
+    "/integrations/boursorama/cash/preview",
+    response_model=schemas.BoursoramaCashPreviewResponse,
+)
+def preview_boursorama_cash(
+    payload: schemas.BoursoramaCashPreviewRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    from .boursorama_cash_sync import fetch_cash_preview
+
+    try:
+        preview = fetch_cash_preview(
+            current_user.id,
+            url=payload.url,
+            timeout_ms=payload.timeout_ms,
+            headless=payload.headless,
+        )
+        return jsonable_encoder(preview)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="Failed to preview Boursorama cash") from exc
+
+
+@app.post(
+    "/integrations/boursorama/cash/sync",
+    response_model=schemas.BoursoramaCashSyncResponse,
+)
+def sync_boursorama_cash(
+    payload: schemas.BoursoramaCashSyncRequest,
+    db: Session = Depends(get_session),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    from .boursorama_cash_sync import fetch_cash_preview, sync_cash_accounts
+
+    try:
+        preview = fetch_cash_preview(
+            current_user.id,
+            url=payload.url,
+            timeout_ms=payload.timeout_ms,
+            headless=payload.headless,
+        )
+        result = sync_cash_accounts(
+            db,
+            current_user.id,
+            preview,
+            create_missing_accounts=payload.create_missing_accounts,
+            capture_daily_history=payload.capture_daily_history,
+        )
+        return jsonable_encoder(result)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to sync Boursorama cash") from exc
+
+
 @app.post("/auth/login", response_model=schemas.TokenResponse)
 def login_user(payload: schemas.LoginRequest, db: Session = Depends(get_session)):
     user = crud.get_user_by_email(db, payload.email)

@@ -581,6 +581,67 @@ class CashTransaction(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BoursoramaSessionStatus(BaseModel):
+    available: bool
+    state_path: str
+    metadata_path: str
+    captured_at: Optional[datetime] = None
+    landing_url: Optional[str] = None
+    login_url: Optional[str] = None
+
+
+class BoursoramaCashPreviewRequest(BaseModel):
+    url: Optional[str] = Field(None, description="Override the URL opened after restoring the session")
+    timeout_ms: int = Field(30000, ge=1000, le=300000)
+    headless: bool = Field(True, description="Run the browser headless when reusing the saved session")
+
+
+class BoursoramaCashAccount(BaseModel):
+    name: str
+    amount: float
+    currency: str
+    match_reason: str
+
+
+class BoursoramaCashPreviewResponse(BaseModel):
+    session: BoursoramaSessionStatus
+    extracted_at: datetime
+    page_url: str
+    accounts: List[BoursoramaCashAccount] = Field(default_factory=list)
+
+
+class BoursoramaCashSyncRequest(BoursoramaCashPreviewRequest):
+    create_missing_accounts: bool = Field(
+        True,
+        description="Create a new local account when the scraped name does not match an existing one",
+    )
+    capture_daily_history: bool = Field(
+        True,
+        description="Capture a daily portfolio snapshot after syncing liquidity",
+    )
+
+
+class BoursoramaCashSyncItem(BaseModel):
+    name: str
+    amount: float
+    currency: str
+    action: Literal["updated", "created", "unchanged", "skipped"]
+    account_id: Optional[int] = None
+    message: Optional[str] = None
+
+
+class BoursoramaCashSyncResponse(BaseModel):
+    session: BoursoramaSessionStatus
+    extracted_at: datetime
+    page_url: str
+    updated_count: int
+    created_count: int
+    unchanged_count: int
+    skipped_count: int
+    history_captured: bool
+    items: List[BoursoramaCashSyncItem] = Field(default_factory=list)
+
+
 class BackupAccount(BaseModel):
     id: int
     name: str

@@ -3,6 +3,7 @@ Configuration constants and environment variables for the FollowStocks applicati
 """
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 # Environment variables
@@ -41,6 +42,18 @@ PRICE_TRACKER_YAHOO = "yahoo"
 PRICE_TRACKER_BOURSORAMA = "boursorama"
 PRICE_TRACKERS = {PRICE_TRACKER_YAHOO, PRICE_TRACKER_BOURSORAMA}
 BOURSORAMA_QUOTE_URL = "https://www.boursorama.com/bourse/action/graph/ws/UpdateCharts"
+BOURSORAMA_LOGIN_URL = os.getenv(
+    "BOURSORAMA_LOGIN_URL",
+    "https://clients.boursobank.com/connexion/",
+)
+BOURSORAMA_IDENTIFIER = os.getenv(
+    "BOURSORAMA_IDENTIFIER",
+    os.getenv("BOURSORAMA_LOGIN", ""),
+).strip()
+BOURSORAMA_STORAGE_DIR = os.getenv(
+    "BOURSORAMA_STORAGE_DIR",
+    str(Path(__file__).resolve().parents[2] / "private" / "boursorama"),
+)
 YFINANCE_UNREACHABLE_MESSAGE = (
     "Last prices are not updated because Yahoo Finance is unreachable "
     "(connection lost or blocked)."

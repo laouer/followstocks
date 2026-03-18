@@ -2335,6 +2335,7 @@ const computeAnnualizedReturnBetween = (
 
     const totalValue: Array<[number, number]> = [];
     const portfolioCosts: Array<[number, number]> = [];
+    const latentGain: Array<[number, number]> = [];
     rows.forEach((row) => {
       const timestamp = Date.parse(`${row.snapshot_date}T00:00:00Z`);
       if (Number.isNaN(timestamp)) return;
@@ -2342,10 +2343,11 @@ const computeAnnualizedReturnBetween = (
       totalValue.push([timestamp, Number(trackedPortfolioValue.toFixed(2))]);
       if (row.total_cost !== null && row.total_cost !== undefined) {
         portfolioCosts.push([timestamp, Number(row.total_cost.toFixed(2))]);
+        latentGain.push([timestamp, Number((trackedPortfolioValue - row.total_cost).toFixed(2))]);
       }
     });
 
-    return { totalValue, portfolioCosts };
+    return { totalValue, portfolioCosts, latentGain };
   }, [portfolioHistoryRows]);
 
   const holdingEvolutionSeriesBySymbol = useMemo(() => {
@@ -2382,16 +2384,25 @@ const computeAnnualizedReturnBetween = (
       symbolBuckets.set(symbol, symbolSeries);
     });
 
-    const result = new Map<string, { marketValue: Array<[number, number]>; costTotal: Array<[number, number]> }>();
+    const result = new Map<
+      string,
+      {
+        marketValue: Array<[number, number]>;
+        costTotal: Array<[number, number]>;
+        latentGain: Array<[number, number]>;
+      }
+    >();
     symbolBuckets.forEach((series, symbol) => {
       const sorted = Array.from(series.entries()).sort((a, b) => a[0] - b[0]);
       const marketValue: Array<[number, number]> = [];
       const costTotal: Array<[number, number]> = [];
+      const latentGain: Array<[number, number]> = [];
       sorted.forEach(([timestamp, values]) => {
         marketValue.push([timestamp, Number(values.marketValue.toFixed(2))]);
         costTotal.push([timestamp, Number(values.costTotal.toFixed(2))]);
+        latentGain.push([timestamp, Number((values.marketValue - values.costTotal).toFixed(2))]);
       });
-      result.set(symbol, { marketValue, costTotal });
+      result.set(symbol, { marketValue, costTotal, latentGain });
     });
 
     return result;
@@ -2408,27 +2419,37 @@ const computeAnnualizedReturnBetween = (
     const costSeries = isStockView
       ? selectedStockSeries?.costTotal || []
       : portfolioEvolutionSeries.portfolioCosts;
+    const latentSeries = isStockView
+      ? selectedStockSeries?.latentGain || []
+      : portfolioEvolutionSeries.latentGain;
     const valueSeriesName = isStockView
       ? `${selectedHistorySymbol || "Stock"} value`
       : "Portfolio value";
     const costSeriesName = isStockView
       ? `${selectedHistorySymbol || "Stock"} costs`
       : "Portfolio costs";
-    const hasData = valueSeries.length > 0;
-    const formatKValue = (rawValue: number) => {
+    const latentSeriesName = isStockView
+      ? `${selectedHistorySymbol || "Stock"} latent P/L`
+      : "Latent P/L";
+    const valueSeriesType: "areaspline" | "line" = isStockView ? "line" : "areaspline";
+    const hasData = valueSeries.length > 0 || latentSeries.length > 0;
+    const formatKValue = (rawValue: number, signed = false) => {
       const valueK = (Number(rawValue) || 0) / 1000;
       const absValueK = Math.abs(valueK);
       const maxDigits = absValueK >= 100 ? 0 : absValueK >= 10 ? 1 : 2;
-      return `${valueK.toLocaleString("fr-FR", {
+      const sign = signed && valueK > 0 ? "+" : "";
+      return `${sign}${valueK.toLocaleString("fr-FR", {
         minimumFractionDigits: 0,
         maximumFractionDigits: maxDigits,
       })} k€`;
     };
     const lastPortfolioValue = hasData ? valueSeries[valueSeries.length - 1]?.[1] : null;
+    const lastLatentValue = latentSeries.length ? latentSeries[latentSeries.length - 1]?.[1] : null;
     return {
       chart: {
         backgroundColor: "transparent",
         height: 360,
+        spacingRight: 28,
       },
       title: { text: null },
       credits: { enabled: false },
@@ -2484,45 +2505,88 @@ const computeAnnualizedReturnBetween = (
           style: { color: "#9fb0d4" },
         },
       },
-      yAxis: {
-        opposite: false,
-        startOnTick: false,
-        endOnTick: false,
-        minPadding: 0.02,
-        maxPadding: 0.05,
-        title: { text: null },
-        gridLineColor: "rgba(255, 255, 255, 0.08)",
-        labels: {
-          style: { color: "#9fb0d4", fontSize: "11px" },
-          formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
-            return formatKValue(Number(this.value) || 0);
+      yAxis: [
+        {
+          opposite: false,
+          startOnTick: false,
+          endOnTick: false,
+          minPadding: 0.02,
+          maxPadding: 0.05,
+          title: { text: null },
+          gridLineColor: "rgba(255, 255, 255, 0.08)",
+          labels: {
+            style: { color: "#9fb0d4", fontSize: "11px" },
+            formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+              return formatKValue(Number(this.value) || 0);
+            },
           },
-        },
-        plotLines:
-          lastPortfolioValue !== null && lastPortfolioValue !== undefined
-            ? [
-                {
-                  value: lastPortfolioValue,
-                  color: "rgba(34, 197, 94, 0.5)",
-                  width: 1,
-                  dashStyle: "ShortDot",
-                  zIndex: 4,
-                  label: {
-                    text: formatKValue(lastPortfolioValue),
-                    align: "left",
-                    x: 6,
-                    y: 4,
-                    style: {
-                      color: "#4ade80",
-                      fontSize: "11px",
-                      fontWeight: "700",
-                      textOutline: "none",
+          plotLines:
+            lastPortfolioValue !== null && lastPortfolioValue !== undefined
+              ? [
+                  {
+                    value: lastPortfolioValue,
+                    color: "rgba(34, 197, 94, 0.5)",
+                    width: 1,
+                    dashStyle: "ShortDot",
+                    zIndex: 4,
+                    label: {
+                      text: formatKValue(lastPortfolioValue),
+                      align: "left",
+                      x: 6,
+                      y: 4,
+                      style: {
+                        color: "#4ade80",
+                        fontSize: "11px",
+                        fontWeight: "700",
+                        textOutline: "none",
+                      },
                     },
                   },
-                },
-              ]
-            : [],
-      },
+                ]
+              : [],
+        },
+        {
+          opposite: true,
+          startOnTick: false,
+          endOnTick: false,
+          minPadding: 0.05,
+          maxPadding: 0.08,
+          offset: 6,
+          title: { text: null },
+          gridLineWidth: 0,
+          labels: {
+            align: "left",
+            reserveSpace: true,
+            x: 2,
+            style: { color: "#86efac", fontSize: "11px" },
+            formatter: function (this: Highcharts.AxisLabelsFormatterContextObject) {
+              return formatKValue(Number(this.value) || 0, true);
+            },
+          },
+          plotLines: [
+            {
+              value: 0,
+              color: "rgba(255, 255, 255, 0.2)",
+              width: 1,
+              zIndex: 3,
+            },
+            ...(lastLatentValue !== null && lastLatentValue !== undefined
+              ? [
+                  {
+                    value: lastLatentValue,
+                    color:
+                      lastLatentValue >= 0
+                        ? "rgba(34, 197, 94, 0.45)"
+                        : "rgba(251, 113, 133, 0.45)",
+                    width: 1,
+                    dashStyle: "ShortDot",
+                    zIndex: 4,
+                  },
+                ]
+              : []),
+          ],
+        },
+      ],
       tooltip: {
         shared: true,
         useHTML: true,
@@ -2531,7 +2595,12 @@ const computeAnnualizedReturnBetween = (
         style: { color: "#e9ecf4" },
         xDateFormat: "%e %b %Y",
         pointFormatter: function (this: Highcharts.Point) {
-          const value = formatMoney(this.y as number, totalCurrency);
+          const options = this.series.userOptions as Highcharts.SeriesOptionsType & {
+            custom?: { signed?: boolean };
+          };
+          const value = options.custom?.signed
+            ? formatMoneySigned(this.y as number, totalCurrency)
+            : formatMoney(this.y as number, totalCurrency);
           return `<span style="color:${this.color}">●</span> ${
             this.series.name
           }: <strong>${value}</strong><br/>`;
@@ -2547,24 +2616,29 @@ const computeAnnualizedReturnBetween = (
       series: hasData
         ? [
             {
-              type: "areaspline",
+              type: valueSeriesType,
               name: valueSeriesName,
               data: valueSeries,
               color: "#38bdf8",
-              fillColor: {
-                linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
-                stops: [
-                  [0, "rgba(56, 189, 248, 0.32)"],
-                  [0.6, "rgba(56, 189, 248, 0.14)"],
-                  [1, "rgba(56, 189, 248, 0.02)"],
-                ],
-              },
-              threshold: null,
-              softThreshold: false,
+              yAxis: 0,
+              ...(isStockView
+                ? {}
+                : {
+                    fillColor: {
+                      linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
+                      stops: [
+                        [0, "rgba(56, 189, 248, 0.32)"],
+                        [0.6, "rgba(56, 189, 248, 0.14)"],
+                        [1, "rgba(56, 189, 248, 0.02)"],
+                      ],
+                    },
+                    threshold: null,
+                    softThreshold: false,
+                  }),
               lineWidth: 2.2,
               marker: { enabled: false },
               tooltip: { valueDecimals: 2 },
-            },
+            } as Highcharts.SeriesAreasplineOptions | Highcharts.SeriesLineOptions,
             ...(costSeries.length
               ? [
                   {
@@ -2572,12 +2646,40 @@ const computeAnnualizedReturnBetween = (
                     name: costSeriesName,
                     data: costSeries,
                     color: "#94a3b8",
+                    yAxis: 0,
                     dashStyle: "ShortDash",
                     lineWidth: 1.8,
                     visible: false,
                     marker: { enabled: false },
                     tooltip: { valueDecimals: 2 },
                   } as Highcharts.SeriesLineOptions,
+                ]
+              : []),
+            ...(latentSeries.length
+              ? [
+                  {
+                    type: "areaspline",
+                    name: latentSeriesName,
+                    data: latentSeries,
+                    yAxis: 1,
+                    color: "#22c55e",
+                    negativeColor: LOSS_COLOR,
+                    fillColor: {
+                      linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
+                      stops: [
+                        [0, "rgba(34, 197, 94, 0.26)"],
+                        [0.55, "rgba(34, 197, 94, 0.12)"],
+                        [1, "rgba(34, 197, 94, 0.02)"],
+                      ],
+                    },
+                    negativeFillColor: "rgba(251, 113, 133, 0.14)",
+                    threshold: 0,
+                    softThreshold: false,
+                    lineWidth: 2,
+                    marker: { enabled: false },
+                    tooltip: { valueDecimals: 2 },
+                    custom: { signed: true },
+                  } as Highcharts.SeriesAreasplineOptions,
                 ]
               : []),
           ]
@@ -2593,12 +2695,13 @@ const computeAnnualizedReturnBetween = (
   const historyEmptyMessage = selectedHistorySymbol
     ? `No history yet for ${selectedHistorySymbol} in this window.`
     : "No history yet. Daily snapshots are captured automatically.";
+  const selectedLatentHistorySeries = useMemo(() => {
+    if (!selectedHistorySymbol) return portfolioEvolutionSeries.latentGain;
+    return holdingEvolutionSeriesBySymbol.get(selectedHistorySymbol)?.latentGain || [];
+  }, [holdingEvolutionSeriesBySymbol, portfolioEvolutionSeries, selectedHistorySymbol]);
   const latentVariationPct = useMemo(() => {
-    const rows = portfolioHistoryRows
-      .map((row) => ({
-        timestamp: Date.parse(`${row.snapshot_date}T00:00:00Z`),
-        gain: row.holdings_value + row.placements_value - row.total_cost,
-      }))
+    const rows = selectedLatentHistorySeries
+      .map(([timestamp, gain]) => ({ timestamp, gain }))
       .filter(
         (row): row is { timestamp: number; gain: number } =>
           Number.isFinite(row.timestamp) && row.gain !== null && row.gain !== undefined
@@ -2641,7 +2744,7 @@ const computeAnnualizedReturnBetween = (
     });
 
     return result;
-  }, [portfolioHistoryRows]);
+  }, [selectedLatentHistorySeries]);
   const latentVariationItems = useMemo(
     () => [
       { label: "1 month", value: latentVariationPct.m1 },

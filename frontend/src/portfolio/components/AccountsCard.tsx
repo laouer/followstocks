@@ -286,7 +286,7 @@ function AccountsCard({
               <button
                 type="button"
                 className="table-sort"
-                title="Total performance vs capital contributed."
+                title="Total account value versus capital contributed."
                 onClick={() => handleSort("performance")}
               >
                 Performance {renderSortIcon("performance")}

@@ -213,3 +213,4 @@ chatbot.db*
 .python-version
 ios/
 scripts/
+private/
