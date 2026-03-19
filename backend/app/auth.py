@@ -1,5 +1,6 @@
+import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -10,7 +11,17 @@ from sqlalchemy.orm import Session
 from . import crud, models
 from .database import get_session
 
-JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
+log = logging.getLogger("followstocks")
+
+_jwt_secret = os.getenv("JWT_SECRET", "")
+if not _jwt_secret:
+    log.warning(
+        "JWT_SECRET is not set! Using an insecure default. "
+        "Set the JWT_SECRET environment variable before deploying to production."
+    )
+    _jwt_secret = "insecure-dev-only-change-me"
+
+JWT_SECRET: str = _jwt_secret
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
@@ -27,7 +38,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(user: models.User) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"sub": str(user.id), "email": user.email, "exp": expire}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

@@ -507,11 +507,11 @@ export async function fetchFxRate(base: string, quote: string) {
 }
 
 export async function runYahooTargetsAgent() {
-  return api.post("/agents/yahoo-targets");
+  return api.post("/agents/yahoo-targets", undefined, { timeout: 120_000 });
 }
 
 export async function refreshHoldingsPrices() {
-  return api.post("/holdings/refresh");
+  return api.post("/holdings/refresh", undefined, { timeout: 120_000 });
 }
 
 export default api;

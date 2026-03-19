@@ -2333,7 +2333,26 @@ const computeAnnualizedReturnBetween = (
       return aTime - bTime;
     });
 
+    // Build a map of date -> sum of (market_value - cost_total) from holding snapshots
+    // This is the correct latent P/L: sum of per-holding gains, excluding cash and placements cost confusion
+    const holdingLatentByDate = new Map<number, number>();
+    holdingHistoryRows.forEach((row) => {
+      const timestamp = Date.parse(`${row.snapshot_date}T00:00:00Z`);
+      if (Number.isNaN(timestamp)) return;
+      const marketRaw =
+        row.market_value ?? (row.close_price !== null && row.close_price !== undefined
+          ? row.close_price * row.shares
+          : null);
+      const marketValue = convertAmount(marketRaw, row.currency);
+      const costTotal = convertAmount(row.cost_total, row.currency);
+      if (marketValue === null || marketValue === undefined) return;
+      if (costTotal === null || costTotal === undefined) return;
+      const existing = holdingLatentByDate.get(timestamp) ?? 0;
+      holdingLatentByDate.set(timestamp, existing + (marketValue - costTotal));
+    });
+
     const totalValue: Array<[number, number]> = [];
+    const totalValueWithCash: Array<[number, number]> = [];
     const portfolioCosts: Array<[number, number]> = [];
     const latentGain: Array<[number, number]> = [];
     rows.forEach((row) => {
@@ -2341,14 +2360,25 @@ const computeAnnualizedReturnBetween = (
       if (Number.isNaN(timestamp)) return;
       const trackedPortfolioValue = (row.holdings_value ?? 0) + (row.placements_value ?? 0);
       totalValue.push([timestamp, Number(trackedPortfolioValue.toFixed(2))]);
+      if (row.liquidity_value !== null && row.liquidity_value !== undefined) {
+        totalValueWithCash.push([timestamp, Number((trackedPortfolioValue + row.liquidity_value).toFixed(2))]);
+      }
       if (row.total_cost !== null && row.total_cost !== undefined) {
         portfolioCosts.push([timestamp, Number(row.total_cost.toFixed(2))]);
-        latentGain.push([timestamp, Number((trackedPortfolioValue - row.total_cost).toFixed(2))]);
+      }
+      // Use per-holding latent gain sum if available, otherwise fall back to portfolio-level computation
+      const holdingLatent = holdingLatentByDate.get(timestamp);
+      if (holdingLatent !== undefined) {
+        latentGain.push([timestamp, Number(holdingLatent.toFixed(2))]);
+      } else if (row.total_cost !== null && row.total_cost !== undefined) {
+        // Fallback: approximate from portfolio snapshot (less accurate)
+        const computedGain = (row.holdings_value ?? 0) - row.total_cost;
+        latentGain.push([timestamp, Number(computedGain.toFixed(2))]);
       }
     });
 
-    return { totalValue, portfolioCosts, latentGain };
-  }, [portfolioHistoryRows]);
+    return { totalValue, totalValueWithCash, portfolioCosts, latentGain };
+  }, [portfolioHistoryRows, holdingHistoryRows, fxRates]);
 
   const holdingEvolutionSeriesBySymbol = useMemo(() => {
     const symbolBuckets = new Map<
@@ -2416,6 +2446,9 @@ const computeAnnualizedReturnBetween = (
     const valueSeries = isStockView
       ? selectedStockSeries?.marketValue || []
       : portfolioEvolutionSeries.totalValue;
+    const valueWithCashSeries = isStockView
+      ? []
+      : portfolioEvolutionSeries.totalValueWithCash;
     const costSeries = isStockView
       ? selectedStockSeries?.costTotal || []
       : portfolioEvolutionSeries.portfolioCosts;
@@ -2425,6 +2458,7 @@ const computeAnnualizedReturnBetween = (
     const valueSeriesName = isStockView
       ? `${selectedHistorySymbol || "Stock"} value`
       : "Portfolio value";
+    const valueWithCashSeriesName = "Portfolio + cash";
     const costSeriesName = isStockView
       ? `${selectedHistorySymbol || "Stock"} costs`
       : "Portfolio costs";
@@ -2579,7 +2613,7 @@ const computeAnnualizedReturnBetween = (
                         ? "rgba(34, 197, 94, 0.45)"
                         : "rgba(251, 113, 133, 0.45)",
                     width: 1,
-                    dashStyle: "ShortDot",
+                    dashStyle: "ShortDot" as Highcharts.DashStyleValue,
                     zIndex: 4,
                   },
                 ]
@@ -2639,6 +2673,21 @@ const computeAnnualizedReturnBetween = (
               marker: { enabled: false },
               tooltip: { valueDecimals: 2 },
             } as Highcharts.SeriesAreasplineOptions | Highcharts.SeriesLineOptions,
+            ...(!isStockView && valueWithCashSeries.length
+              ? [
+                  {
+                    type: "line",
+                    name: valueWithCashSeriesName,
+                    data: valueWithCashSeries,
+                    color: "#facc15",
+                    yAxis: 0,
+                    dashStyle: "ShortDot",
+                    lineWidth: 1.8,
+                    marker: { enabled: false },
+                    tooltip: { valueDecimals: 2 },
+                  } as Highcharts.SeriesLineOptions,
+                ]
+              : []),
             ...(costSeries.length
               ? [
                   {
